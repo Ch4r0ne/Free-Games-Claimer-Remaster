@@ -46,11 +46,6 @@ class GOGClaimer(BaseClaimer):
             if cfg.notify_errors:
                 await notify(f"gog failed: {exc}")
         finally:
-            # After everything is done, send a summary of what was claimed
-            claimed = [g for g in self.notify_games if g["status"] != "existed"]
-            if claimed and cfg.notify_summary:
-                msg = f"**GOG** ({self.user}):\n{format_game_list(self.notify_games)}"
-                await notify(msg)
             # Always close the browser, even if there was an error
             await self.close_browser()
 
@@ -185,31 +180,47 @@ class GOGClaimer(BaseClaimer):
         # The browser security model prevents us from interacting with cross-domain iframes.
         # Workaround: navigate directly to the login page URL so the form loads as the main page.
         # After successful login, GOG automatically redirects us back to gog.com.
-        LOGIN_URL = "https://login.gog.com/auth?client_id=46755278331571209&redirect_uri=https%3A%2F%2Fwww.gog.com%2Fon_login_success%3FreturnTo%3D%2Fen%2F&response_type=code&layout=default"
+        LOGIN_URL = "https://login.gog.com/auth?client_id=46755278331571209&redirect_uri=https%3A%2F%2Fwww.gog.com%2Fon_login_success%3FreturnTo%3D%2Fen%2F&response_type=code&layout=default&locale=en-US"
         logger.debug("Navigating directly to login.gog.com...")
         await self.page.get(LOGIN_URL)
+        await self.page.evaluate('if(document.documentElement) document.documentElement.setAttribute("translate", "no");')
         await self.sleep(3)
 
         try:
-            # Find the email/username input field and type the email
-            username_input = await self.page.find("#login_username", timeout=10)
-            if username_input:
-                # Clear any existing text first using JS (React forms need special clearing)
-                await username_input.apply('(el) => { let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; if(setter) setter.call(el, ""); el.dispatchEvent(new Event("input", {bubbles: true})); }')
-                await username_input.send_keys(email)
+            # Wait for the react form to fully render before injecting
+            await self.page.find("#login_username", timeout=15)
+            await self.page.find("#login_login", timeout=5)
+            
+            import json
+            js_email = json.dumps(email)
+            js_password = json.dumps(password)
 
-            # Find the password input field and type the password
-            password_input = await self.page.find("#login_password", timeout=10)
-            if password_input:
-                await password_input.apply('(el) => { let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; if(setter) setter.call(el, ""); el.dispatchEvent(new Event("input", {bubbles: true})); }')
-                await password_input.send_keys(password)
-
-            # Click the "Sign in" / login button
-            login_btn = await self.page.find("#login_login", timeout=5)
-            if login_btn:
-                await login_btn.click()
-                logger.debug("Clicked login button, waiting for redirect...")
-                await self.sleep(5)
+            # Fill the inputs instantly using JS to prevent Google Translate popups from stealing focus
+            completed = await self.page.evaluate(f'''
+                (() => {{
+                    const u = document.querySelector("#login_username");
+                    const p = document.querySelector("#login_password");
+                    const b = document.querySelector("#login_login");
+                    if (u && p && b) {{
+                        let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                        if(setter) {{
+                            setter.call(u, {js_email});
+                            u.dispatchEvent(new Event("input", {{bubbles: true}}));
+                            setter.call(p, {js_password});
+                            p.dispatchEvent(new Event("input", {{bubbles: true}}));
+                        }}
+                        b.click();
+                        return true;
+                    }}
+                    return false;
+                }})()
+            ''')
+            if completed:
+                logger.debug("Injected credentials and clicked login automatically.")
+            else:
+                logger.error("Could not find GOG login inputs to inject.")
+                
+            await self.sleep(5)
         except Exception:
             logger.exception("Login form interaction failed")
 
@@ -217,16 +228,112 @@ class GOGClaimer(BaseClaimer):
         # Wait for redirect back to gog.com and check login status
         for idx in range(15):
             current_url = await self.page.evaluate("window.location.href")
+            logger.info("GOG Wait Loop %s: current_url is %s", idx, current_url)
+            
+            await self.page.evaluate('if(document.documentElement) document.documentElement.setAttribute("translate", "no");')
+            
             if isinstance(current_url, str) and "gog.com/en" in current_url:
                 # We're back on the main site, check login
                 await self.sleep(2)
                 if await _is_logged_in():
                     self.log_signed_in()
                     return True
+                    
+            # Check for 2FA / Email Verification (URL is the most reliable, DOM text as fallback)
+            is_2fa = isinstance(current_url, str) and "two_factor" in current_url
+            if not is_2fa:
+                is_2fa = await self.page.evaluate("""
+                    (() => {
+                        const t = (document.body.innerText || '').toLowerCase();
+                        return (t.includes('two-step') || t.includes('two step') || 
+                                t.includes('2-step') || t.includes('verification code') || 
+                                t.includes('kod weryfikacyjny') || t.includes('kod z e-maila') ||
+                                t.includes('security code') || t.includes('weryfikacja dwuetapowa') ||
+                                t.includes('kod zabezpieczający') || t.includes('authenticator app') ||
+                                t.includes('aplikację uwierzytelniającą'));
+                    })()
+                """)
+            
+            if is_2fa:
+                if cfg.gog_otp_enable and cfg.gog_otp_codes:
+                    used_codes_file = cfg._data_dir / "used_gog_codes.txt"
+                    used_codes = []
+                    if used_codes_file.exists():
+                        used_codes = used_codes_file.read_text("utf-8").splitlines()
+                    
+                    # Find first unused code
+                    raw_code = None
+                    for c in cfg.gog_otp_codes:
+                        if c not in used_codes:
+                            raw_code = c
+                            break
+                            
+                    if raw_code:
+                        code_to_use = raw_code.replace("-", "").replace(" ", "")[:8]
+                        logger.info("GOG 2FA detected! GOG_OTP_ENABLE is true. Using backup code %s...", code_to_use[:3] + "*****")
+                        
+                        # Ensure we are on the backup code page
+                        if "backup" not in current_url:
+                            await self.page.get("https://login.gog.com/login/two_factor/backup")
+                            await self.sleep(2)
+                        
+                        # Fill the inputs
+                        await self.page.evaluate(f'''
+                            (() => {{
+                                const code = "{code_to_use}";
+                                const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+                                if (inputs.length > 0) {{
+                                    inputs.forEach((inp, i) => {{
+                                        if (i < code.length) {{
+                                            let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                                            if(setter) setter.call(inp, code[i]);
+                                            inp.dispatchEvent(new Event("input", {{bubbles: true}}));
+                                        }}
+                                    }});
+                                }}
+                            }})()
+                        ''')
+                        await self.sleep(1)
+                        
+                        # Click the continue/submit button
+                        await self.page.evaluate('''
+                            const btn = document.querySelector('button[type="submit"]') || Array.from(document.querySelectorAll('button')).find(b => b.textContent.toLowerCase().includes('contin') || b.textContent.toLowerCase().includes('konty'));
+                            if (btn) btn.click();
+                        ''')
+                        await self.sleep(5)
+                        
+                        # Record the code as used in the persistent data directory
+                        with used_codes_file.open("a", encoding="utf-8") as f:
+                            f.write(raw_code + "\n")
+                        logger.debug("Successfully consumed a backup code and appended it to %s", used_codes_file.name)
+                        continue # Jump to the next iteration of the loop to verify login again
+                    else:
+                        logger.warning("All provided GOG_OTP_CODES have been exhausted! Falling back to VNC...")
+
+                logger.warning("GOG Two-Step Verification detected (Email/App 2FA)! Falling back to VNC...")
+                
+                async def _vnc_check_gog_2fa() -> bool:
+                    url = await self.page.evaluate("window.location.href")
+                    if isinstance(url, str) and "login.gog" not in url:
+                        # Redirected away from login page, check if logged in
+                        return await _is_logged_in()
+                    return False
+                    
+                logged_in = await self._wait_for_vnc_login(
+                    _vnc_check_gog_2fa, 
+                    timeout=180,
+                    custom_msg="GOG requires 2FA verification! Open http://localhost:7080 to enter the code via VNC..."
+                )
+                if logged_in:
+                    self.log_signed_in()
+                    return True
+                return False
+
             await self.sleep(2)
-            if idx == 7:
-                logger.warning("Automated login stuck (captcha/MFA?). Falling back to VNC...")
-                # Navigate back to main page first so VNC login check works
+            if idx == 13:
+                logger.warning("Automated login stuck (captcha?). Falling back to VNC...")
+                # Still on login page without 2FA detected. To allow the generic VNC login
+                # check to work on the main site, we navigate back to main page.
                 await self.page.get(URL_CLAIM)
                 await self.sleep(3)
                 logged_in = await self._wait_for_vnc_login(_is_logged_in, timeout=120)
@@ -434,7 +541,8 @@ class GOGClaimer(BaseClaimer):
     async def _redeem_gog_code(self, code: str, title: str, url: str) -> None:
         """Navigate to gog.com/redeem/<code> and complete the redemption process."""
         # GOG has a direct redemption URL: gog.com/redeem/XXXXXXXXXXXXX
-        redeem_url = f"https://www.gog.com/redeem/{code}"
+        # Force English locale via /en/ path to get predictable button labels
+        redeem_url = f"https://www.gog.com/en/redeem/{code}"
         logger.info("Redeeming GOG code for '%s' at %s", title, redeem_url)
 
         try:
@@ -479,27 +587,29 @@ class GOGClaimer(BaseClaimer):
 
             # Click the "Continue" button on the redemption page.
             # We use JavaScript to find and click it because GOG has overlay elements
-            # that block normal clicks. Supports both English and Polish button text.
+            # that block normal clicks. Supports multiple languages.
             await self.page.evaluate("""
                 (() => {
-                    const btns = [...document.querySelectorAll('button, a.button')];
+                    const btns = [...document.querySelectorAll('button, a.button, input[type="submit"]')];
                     const btn = btns.find(b => {
-                        const t = (b.textContent || '').trim().toLowerCase();
-                        return t === 'continue' || t === 'kontynuuj';
+                        const t = (b.textContent || b.value || '').trim().toLowerCase();
+                        return t === 'continue' || t === 'kontynuuj' || t === 'continuer' || t === 'weiter' || t === 'continuar';
                     });
                     if (btn && !btn.disabled) btn.click();
                 })()
             """)
             await self.sleep(5)
 
-            # Click the final "Redeem" button to add the game to our GOG library.
-            # Supports English ("Redeem") and Polish ("Odbierz", "Zrealizuj") text.
+            # Click the final "Activate" / "Redeem" button to add the game to our GOG library.
+            # GOG uses different labels depending on the page language:
+            #   EN: "Activate" or "Redeem"  |  PL: "Aktywuj" or "Odbierz"  |  DE: "Einlösen"  |  ES: "Canjear"
             await self.page.evaluate("""
                 (() => {
-                    const btns = [...document.querySelectorAll('button, a.button')];
+                    const targets = ['activate', 'aktywuj', 'redeem', 'odbierz', 'zrealizuj', 'einlösen', 'canjear', 'activer'];
+                    const btns = [...document.querySelectorAll('button, a.button, input[type="submit"]')];
                     const btn = btns.find(b => {
-                        const t = (b.textContent || '').trim().toLowerCase();
-                        return t === 'redeem' || t === 'odbierz' || t === 'zrealizuj' || t.includes('redeem') || t.includes('odbierz');
+                        const t = (b.textContent || b.value || '').trim().toLowerCase();
+                        return targets.some(target => t === target || t.includes(target));
                     });
                     if (btn && !btn.disabled) btn.click();
                 })()
@@ -559,7 +669,8 @@ class GOGClaimer(BaseClaimer):
             logger.exception("Failed to redeem GOG code for '%s'", title)
             self.notify_games.append({"title": title, "url": url, "status": f"code: {code} (GOG, failed)"})
 
-async def claim_gog() -> None:
+async def claim_gog() -> dict:
     """Convenience entry point."""
     claimer = GOGClaimer()
     await claimer.run()
+    return {"store": "GOG", "user": claimer.user, "games": claimer.notify_games}

@@ -58,6 +58,9 @@ class Config:
     novnc_port: str | None = os.getenv("NOVNC_PORT")
     scheduler_hours: int = _int("SCHEDULER_HOURS", 12)
 
+    # --- DB Reset ---
+    reset_db_games: bool = _bool("RESET_DB_GAMES", default=False)
+
     # --- Directories ---
     # _data_dir must resolve to /fgc/data (the Docker volume mount),
     # NOT /fgc/src/data.  config.py lives at /fgc/src/core/config.py,
@@ -96,11 +99,36 @@ class Config:
     gog_password: str | None = os.getenv("GOG_PASSWORD") or os.getenv("PASSWORD")
     gog_newsletter: bool = _bool("GOG_NEWSLETTER")
     gog_force_redeem: bool = _bool("GOG_FORCE_REDEEM")
+    gog_otp_enable: bool = _bool("GOG_OTP_ENABLE")
+    gog_otp_codes: list[str] = [c.strip() for c in os.getenv("GOG_OTP_CODES", "").split(",") if c.strip()]
 
     # --- Steam ---
     steam_username: str | None = os.getenv("STEAM_USERNAME")
     steam_password: str | None = os.getenv("STEAM_PASSWORD") or os.getenv("PASSWORD")
-    steam_use_gamerpower: bool = _bool("STEAM_USE_GAMERPOWER", default=True)
+
+    # --- GamerPower & Fanatical ---
+    # Some GamerPower giveaways redirect to Fanatical.com,
+    # which requires a Fanatical account + Steam account connection.
+    # Set FANATICAL_ENABLE=true and provide credentials to enable.
+    fanatical_enable: bool = _bool("FANATICAL_ENABLE", default=False)
+    fanatical_email: str | None = os.getenv("FANATICAL_EMAIL") or os.getenv("EMAIL")
+    fanatical_password: str | None = os.getenv("FANATICAL_PASSWORD") or os.getenv("PASSWORD")
+
+    # --- Alienware Arena ---
+    alienware_enable: bool = _bool("ALIENWARE_ENABLE", default=False)
+
+    # --- Itch.io ---
+    itchio_enable: bool = _bool("ITCHIO_ENABLE", default=False)
+    itchio_email: str | None = os.getenv("ITCHIO_EMAIL") or os.getenv("EMAIL")
+    itchio_password: str | None = os.getenv("ITCHIO_PASSWORD") or os.getenv("PASSWORD")
+
+    # --- IndieGala ---
+    indiegala_enable: bool = _bool("INDIEGALA_ENABLE", default=False)
+    indiegala_email: str | None = os.getenv("INDIEGALA_EMAIL") or os.getenv("EMAIL")
+    indiegala_password: str | None = os.getenv("INDIEGALA_PASSWORD") or os.getenv("PASSWORD")
+
+    # --- Unknown/Other Indirect Stores ---
+    unknown_stores_enable: bool = _bool("UNKNOWN_STORES_ENABLE", default=False)
 
     # --- Module selection ---
     # Comma-separated list of stores to run (e.g. "steam,prime").

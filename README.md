@@ -4,17 +4,23 @@
   <img alt="logo-free-games-claimer" src="https://user-images.githubusercontent.com/493741/214588518-a4c89998-127e-4a8c-9b1e-ee4a9d075715.png" />
 </p>
 
-> **Not a fork** — a complete ground-up Python remaster inspired by [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer). 
+> **Not a fork** – a complete ground-up Python remaster inspired by [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer). 
 >
 > ℹ️ **Are you coming from the original Node.js version?**  
 > For a comprehensive, file-by-file breakdown of what changed, dropped features, stealth automation upgrades, and architectural differences, **please read [MODIFICATIONS.md](./MODIFICATIONS.md).**
 
 Automatically claims free games on:
 
-- <img alt="logo steam" src="https://store.steampowered.com/favicon.ico" width="20" align="middle" /> **Steam** — via [SteamDB](https://steamdb.info/upcoming/free/) scraping + [GamerPower API](https://www.gamerpower.com/api) (only *Free to Keep*, not *Play for Free*)
-- <img alt="logo epic-games" src="https://github.com/user-attachments/assets/82e9e9bf-b6ac-4f20-91db-36d2c8429cb6" width="20" align="middle" /> **Epic Games Store** — weekly free games
-- <img alt="logo prime-gaming" src="https://github.com/user-attachments/assets/7627a108-20c6-4525-a1d8-5d221ee89d6e" width="20" align="middle" /> **Amazon Prime Gaming** — monthly Prime Gaming catalogue + GOG key redemption
-- <img alt="logo gog" src="https://github.com/user-attachments/assets/49040b50-ee14-4439-8e3c-e93cafd7c3a5" width="20" align="middle" /> **GOG** — periodic free giveaways
+- <img alt="logo steam" src="https://store.steampowered.com/favicon.ico" width="20" align="middle" /> **Steam** – via [SteamDB](https://steamdb.info/upcoming/free/) scraping (only *Free to Keep*, not *Play for Free*)
+- <img alt="logo epic-games" src="https://github.com/user-attachments/assets/82e9e9bf-b6ac-4f20-91db-36d2c8429cb6" width="20" align="middle" /> **Epic Games Store** – weekly free games
+- <img alt="logo prime-gaming" src="https://github.com/user-attachments/assets/7627a108-20c6-4525-a1d8-5d221ee89d6e" width="20" align="middle" /> **Amazon Prime Gaming** – monthly Prime Gaming catalogue + GOG key redemption
+- <img alt="logo gog" src="https://github.com/user-attachments/assets/49040b50-ee14-4439-8e3c-e93cafd7c3a5" width="20" align="middle" /> **GOG** – periodic free giveaways
+
+**Gamerpower API** routing to indirect stores:
+- <img alt="logo fanatical" src="https://www.fanatical.com/favicon.ico" width="20" align="middle" /> **Fanatical** – auto-bypasses cookie banners and hooks Steam accounts to grab weekly PC drops.
+- <img alt="logo itchio" src="https://itch.io/favicon.ico" width="20" align="middle" /> **Itch.io** – DRM-free indie giveaways
+- <img alt="logo indiegala" src="https://www.indiegala.com/favicon.ico" width="20" align="middle" /> **IndieGala** – free Steam keys & DRM-free games
+- <img alt="logo alienware" src="https://www.alienwarearena.com/favicon.ico" width="20" align="middle" /> **Alienware Arena** – (Notify-only) ARP point giveaways
 
 Runs as a Docker container with a built-in scheduler (every 12 hours). Login via **VNC in browser** or automated credentials.
 
@@ -99,14 +105,37 @@ Options are set via environment variables in `.env`:
 | `EG_EMAIL` | | Epic Games login email. |
 | `EG_PASSWORD` | | Epic Games login password. |
 | `EG_OTPKEY` | | Epic Games 2FA OTP key. |
+| `EG_PARENTALPIN` | | Epic Games Parental Controls PIN. |
 | `PG_EMAIL` | | Prime Gaming (Amazon) email. |
 | `PG_PASSWORD` | | Prime Gaming password. |
 | `PG_OTPKEY` | | Prime Gaming 2FA OTP key. |
+| `PG_FORCE_CHECK_COLLECTED` | `0` | Force re-check already marked 'claimed' games. |
+| `PG_REDEEM` | `0` | Try to redeem keys automatically on external stores. |
+| `PG_CLAIMDLC` | `0` | Try claiming DLCs as well (experimental). |
 | `GOG_EMAIL` | | GOG login email. |
 | `GOG_PASSWORD` | | GOG login password. |
+| `GOG_NEWSLETTER` | `0` | Keep newsletter sub after claiming (1 = keep). |
+| `GOG_FORCE_REDEEM` | `0` | Force re-redeem old GOG codes from Prime Gaming. |
+| `GOG_OTP_ENABLE` | `false`| Use backup codes for GOG 2FA. |
+| `GOG_OTP_CODES` | | Comma-separated list of GOG backup codes. |
 | `STEAM_USERNAME` | | Steam username. |
 | `STEAM_PASSWORD` | | Steam password. |
 | `STORES` | *(all)* | Comma-separated list of stores to run. |
+| `RESET_DB_GAMES` | `false` | Retroactively erase any database claims recorded within the last 7 days upon execution. Assists in clearing false positives. |
+| `FANATICAL_ENABLE`| `false`| Enable Fanatical claiming via GamerPower. |
+| `FANATICAL_EMAIL` | | Fanatical account email. |
+| `FANATICAL_PASSWORD`| | Fanatical account password. |
+| `ALIENWARE_ENABLE`| `false`| Enable Alienware Arena notifications via GamerPower. |
+| `ITCHIO_ENABLE`| `false`| Enable Itch.io claiming via GamerPower. |
+| `ITCHIO_EMAIL` | | Itch.io account email. |
+| `ITCHIO_PASSWORD` | | Itch.io account password. |
+| `INDIEGALA_ENABLE`| `false`| Enable IndieGala claiming via GamerPower. |
+| `INDIEGALA_EMAIL` | | IndieGala account email. |
+| `INDIEGALA_PASSWORD`| | IndieGala account password. |
+| `UNKNOWN_STORES_ENABLE`| `false`| Open unsupported external stores for manual claiming via VNC. |
+| `BROWSER_DIR` | `data/browser` | Browser profile directory (persists cookies/sessions). |
+| `DEBUG` | `0` | Shows verbose actions the bot takes. |
+| `DRYRUN`| `0` | Click "claim" buttons but do not submit / perform final purchase. |
 | `DISCORD_WEBHOOK` | | Discord webhook URL for notifications. |
 | `NOTIFY_SUMMARY` | `1` | Set to 0 to disable game claim summaries. |
 | `NOTIFY_ERRORS` | `1` | Set to 0 to disable fatal error alerts. |
@@ -135,21 +164,25 @@ docker compose run --rm app python main.py steam gog --once
 ```
 free-games-claimer-remaster/
 ├── main.py                 # Entry point + scheduler + CLI
-├── docker-compose.yml      # Base App container configuration
+├── docker-compose.yml      # Container configuration
 ├── Dockerfile              # Ubuntu + Chrome + TurboVNC + Python
-├── MODIFICATIONS.md        # Technical explanation of the codebase overhaul
-├── .env                    # User configurations
+├── MODIFICATIONS.md        # Codebase overhaul technical reference
+├── WINDOWS_BEGINNER_GUIDE.md
+├── .env                    # Your local configuration (gitignored)
+├── .env.example            # Configuration template
 └── src/
+    ├── version.py          # Version string
     ├── core/               # Shared engine components
     │   ├── claimer.py      # BaseClaimer & CDP stealth patches
-    │   ├── config.py       # Configuration loader
+    │   ├── config.py       # Typed configuration loader (.env → Python)
     │   ├── database.py     # SQLAlchemy models & SQLite engine
-    │   └── notifier.py     # Modular Discord/apprise webhooks
-    └── stores/             # Specific store modules
-        ├── epic.py
-        ├── prime.py
-        ├── gog.py
-        └── steam.py
+    │   └── notifier.py     # Modular Discord/Apprise webhooks
+    └── stores/             # Store-specific claiming modules
+        ├── epic.py         # Epic Games Store
+        ├── prime.py        # Amazon Prime Gaming
+        ├── gog.py          # GOG (+ GOG code redemption from Prime)
+        ├── steam.py        # Steam (SteamDB scraping)
+        └── gamerpower.py   # GamerPower API (Fanatical, Itch.io, IndieGala, Alienware)
 ```
 
 ### How it works
@@ -168,7 +201,7 @@ free-games-claimer-remaster/
 
 Set `DISCORD_WEBHOOK` in `.env` for Discord notifications about claimed games and errors. Use the respective `NOTIFY_...=0` flags to silence notification subsets if they generate too much noise.
 
-For other services, [apprise](https://github.com/caronc/apprise) natively supports sending to Telegram, Slack, Matrix and more — just set the `NOTIFY` variable!
+For other services, [apprise](https://github.com/caronc/apprise) natively supports sending to Telegram, Slack, Matrix and more – just set the `NOTIFY` variable!
 
 ---
 
@@ -177,16 +210,17 @@ For other services, [apprise](https://github.com/caronc/apprise) natively suppor
 | Issue | Solution |
 |---|---|
 | Store not logging in | Open VNC (`http://localhost:7080`) and login manually. Your credentials or session logic persist beautifully after first login. |
-| Steam game not detected | Check that the game is listed on [GamerPower](https://www.gamerpower.com/api/giveaways?platform=steam&type=game) or [SteamDB Free](https://steamdb.info/upcoming/free/). |
-| Epic captcha | The stealth patches prevent 99% of captchas. If a rigorous manual prompt arrives, solve it once via VNC. |
-| Prime Gaming "Sign in" loop | The module ignores fake Amazon "Passkey" banners to find the real login endpoint natively. |
+| Steam game not detected | Check that the game is listed on [SteamDB Free](https://steamdb.info/upcoming/free/). |
+| GamerPower missing games | Certain platforms (Itch.io, IndieGala, Alienware, Fanatical) require explicit `{STORE}_ENABLE=true` toggles in configuration to activate their respective handlers. |
+| Epic captcha | The stealth patches prevent 99% of captchas. EU 'Right of withdrawal' overlays are automatically accepted. If a rigorous manual prompt arrives, solve it once via VNC. |
+| False positive claims | Set `RESET_DB_GAMES=true` in your `.env`, reboot the container, and the bot will forget the last 7 days of claims, allowing the logic to try claiming them again. |
 | Container crashes on start | Check logs: `docker compose logs app --tail=50`. A clean restart purges `.X1-lock` bugs. |
 
 ---
 
 ## Credits
 
-Inspired by [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer) — the original Node.js project.
+Inspired by [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer) – the original Node.js project.
 This remaster is a **completely independent rewrite** in Python, not a fork.
 
 ---
@@ -196,6 +230,8 @@ This remaster is a **completely independent rewrite** in Python, not a fork.
 [AGPL-3.0](./LICENSE)
 
 ---
+
+## Analytics
 
 [![Star History Chart](https://api.star-history.com/svg?repos=P-Adamiec/Free-Games-Claimer-Remaster&type=Date)](https://www.star-history.com/?repos=P-Adamiec%2FFree-Games-Claimer-Remaster&type=date&legend=bottom-right)
 

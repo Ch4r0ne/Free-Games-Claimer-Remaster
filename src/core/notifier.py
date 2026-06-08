@@ -34,19 +34,40 @@ async def send_discord(
         logger.debug("DISCORD_WEBHOOK not set – skipping Discord notification.")
         return
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        data = {"content": message, "username": username}
-        files = None
-        if screenshot_path and screenshot_path.exists():
-            files = {"file": (screenshot_path.name, screenshot_path.read_bytes(), "image/png")}
-            resp = await client.post(webhook_url, data=data, files=files)
-        else:
-            resp = await client.post(webhook_url, json=data)
+    # Discord enforces a 2000-character limit per message.
+    # Split long messages into chunks so nothing gets dropped.
+    MAX_LEN = 2000
+    chunks = []
+    if len(message) <= MAX_LEN:
+        chunks = [message]
+    else:
+        # Split on newline boundaries to keep formatting intact
+        current = ""
+        for line in message.split("\n"):
+            # +1 accounts for the newline we'll re-add
+            if len(current) + len(line) + 1 > MAX_LEN:
+                if current:
+                    chunks.append(current)
+                current = line
+            else:
+                current = f"{current}\n{line}" if current else line
+        if current:
+            chunks.append(current)
 
-        if resp.status_code not in (200, 204):
-            logger.warning("Discord webhook returned %s: %s", resp.status_code, resp.text)
-        else:
-            logger.info("Discord notification sent.")
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i, chunk in enumerate(chunks):
+            data = {"content": chunk, "username": username}
+            # Attach the screenshot only to the first chunk
+            if i == 0 and screenshot_path and screenshot_path.exists():
+                files = {"file": (screenshot_path.name, screenshot_path.read_bytes(), "image/png")}
+                resp = await client.post(webhook_url, data=data, files=files)
+            else:
+                resp = await client.post(webhook_url, json=data)
+
+            if resp.status_code not in (200, 204):
+                logger.warning("Discord webhook returned %s: %s", resp.status_code, resp.text)
+            else:
+                logger.info("Discord notification sent (%d/%d).", i + 1, len(chunks))
 
 
 async def send_apprise(message: str, *, title: str | None = None) -> None:

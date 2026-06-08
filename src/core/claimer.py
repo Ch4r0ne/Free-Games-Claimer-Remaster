@@ -213,6 +213,7 @@ class BaseClaimer:
             "--hide-crash-restore-bubble",
             "--restore-last-session",
             "--lang=en-US",
+            "--accept-lang=en-US,en;q=0.9",
             "--disable-dev-shm-usage",     # Docker shared memory fix
             "--disable-smooth-scrolling",  # CPU optimization
             "--disable-extensions",        # CPU optimization
@@ -222,7 +223,8 @@ class BaseClaimer:
             "--disable-backgrounding-occluded-windows",
             "--disable-breakpad",
             "--disable-component-update",
-            "--disable-features=AudioServiceOutOfProcess,Translate",
+            "--disable-features=AudioServiceOutOfProcess,Translate,TranslateUI",
+            "--disable-translate",
             "--disable-ipc-flooding-protection",
             "--disable-renderer-backgrounding",
             "--metrics-recording-only",
@@ -238,6 +240,23 @@ class BaseClaimer:
 
         if extra_args:
             args.extend(extra_args)
+
+        # Forcefully disable Google Translate at the Chromium profile level
+        try:
+            import json
+            store_browser_dir.mkdir(parents=True, exist_ok=True)
+            default_dir = store_browser_dir / "Default"
+            default_dir.mkdir(exist_ok=True)
+            prefs_file = default_dir / "Preferences"
+            prefs = {}
+            if prefs_file.exists():
+                prefs = json.loads(prefs_file.read_text("utf-8"))
+            if "translate" not in prefs:
+                prefs["translate"] = {}
+            prefs["translate"]["enabled"] = False
+            prefs_file.write_text(json.dumps(prefs), "utf-8")
+        except Exception as e:
+            self.logger.debug("Failed to seed Chrome preferences: %s", e)
 
         self.browser = await uc.start(
             headless=headless,
@@ -320,19 +339,24 @@ class BaseClaimer:
         except Exception:
             return None
 
-    async def _wait_for_vnc_login(self, check_fn, *, timeout: int | None = None, interval: int = 5, log_interval: int = 60) -> bool:
+    async def _wait_for_vnc_login(self, check_fn, *, timeout: int | None = None, interval: int = 5, log_interval: int = 60, custom_msg: str | None = None) -> bool:
         """Wait for manual VNC login.
         
         Polls every `interval` seconds, but only logs a waiting message every `log_interval` seconds.
         """
         timeout = timeout or cfg.vnc_login_timeout
         from src.core.notifier import notify
-        if cfg.novnc_port:
-            self.logger.info("Open http://localhost:%s to login manually (waiting %ds).", cfg.novnc_port, timeout)
-            msg = f"**{self.store_name}** requires manual login! Open http://localhost:{cfg.novnc_port} to login via VNC (waiting {timeout}s)."
+        
+        if custom_msg:
+            msg = custom_msg
+            self.logger.info(custom_msg.replace("**", "").replace("!", ""))
         else:
-            self.logger.info("Please login via VNC (waiting %ds).", timeout)
-            msg = f"**{self.store_name}** requires manual login via VNC (waiting {timeout}s)."
+            if cfg.novnc_port:
+                self.logger.info("Open http://localhost:%s to login manually (waiting %ds).", cfg.novnc_port, timeout)
+                msg = f"**{self.store_name}** requires manual login! Open http://localhost:{cfg.novnc_port} to login via VNC (waiting {timeout}s)."
+            else:
+                self.logger.info("Please login via VNC (waiting %ds).", timeout)
+                msg = f"**{self.store_name}** requires manual login via VNC (waiting {timeout}s)."
 
         if cfg.notify_login_request:
             await notify(msg)

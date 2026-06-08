@@ -25,6 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 from src.core.config import cfg
 from src.core.database import init_db
 from src.stores.epic import claim_epic
+from src.stores.gamerpower import claim_gamerpower
 from src.stores.gog import claim_gog
 from src.stores.prime import claim_prime
 from src.stores.steam import claim_steam
@@ -82,10 +83,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # Each entry maps a short name to a (display name, function) pair.
 # When the scheduler runs, it loops through these and calls each function.
 ALL_CLAIMERS: dict[str, tuple[str, object]] = {
-    "steam":  ("Steam",        claim_steam),
-    "epic":   ("Epic Games",   claim_epic),
-    "prime":  ("Prime Gaming", claim_prime),
-    "gog":    ("GOG",          claim_gog),
+    "steam":      ("Steam",        claim_steam),
+    "epic":       ("Epic Games",   claim_epic),
+    "prime":      ("Prime Gaming", claim_prime),
+    "gog":        ("GOG",          claim_gog),
+    "gamerpower": ("GamerPower",   claim_gamerpower),
 }
 
 # Accepted aliases → canonical name
@@ -100,6 +102,8 @@ _ALIASES: dict[str, str] = {
     "primegaming":   "prime",
     "amazon":        "prime",
     "gog":           "gog",
+    "gamerpower":    "gamerpower",
+    "gp":            "gamerpower",
 }
 
 
@@ -133,7 +137,7 @@ def _get_active_claimers() -> list[tuple[str, object]]:
     elif cfg.stores:
         selected = _resolve_stores([s for s in cfg.stores.split(",") if s.strip()])
     else:
-        selected = list(ALL_CLAIMERS.keys())
+        selected = ["steam", "epic", "prime", "gog"]
 
     return [(ALL_CLAIMERS[k][0], ALL_CLAIMERS[k][1]) for k in selected if k in ALL_CLAIMERS]
 
@@ -171,9 +175,13 @@ async def run_claimers() -> None:
     store_names = [name for name, _ in claimers]
     logger.info("🎮 Starting claiming run… %s", ", ".join(store_names))
 
+    aggregated_results = []
+
     for name, func in claimers:
         try:
-            await func()
+            res = await func()
+            if isinstance(res, dict) and res.get("games"):
+                aggregated_results.append(res)
         except Exception:
             logger.exception("✗ %s crashed", name)
             await notify(f"{name} claimer crashed with an unhandled exception. Check logs.")
@@ -181,32 +189,65 @@ async def run_claimers() -> None:
     # After standard claimers finish, check for pending GOG codes from Prime Gaming.
     # Only run if there are actually codes with status="claimed" waiting,
     # or if GOG_FORCE_REDEEM is explicitly enabled.
-    try:
-        from src.core.database import async_session, ClaimedGame
-        from sqlalchemy import select
-        
-        # Quick check: are there any pending GOG codes at all?
-        has_pending = False
-        async with async_session() as session:
-            if cfg.gog_force_redeem:
-                has_pending = True  # Force mode: always check
+    if "GOG" not in store_names:
+        logger.debug("Skipping pending GOG codes redemption as 'gog' is not in STORES.")
+    else:
+        try:
+            from src.core.database import async_session, ClaimedGame
+            from sqlalchemy import select
+            
+            # Quick check: are there any pending GOG codes at all?
+            has_pending = False
+            async with async_session() as session:
+                if cfg.gog_force_redeem:
+                    has_pending = True  # Force mode: always check
+                else:
+                    stmt = select(ClaimedGame).where(
+                        ClaimedGame.status == "claimed",
+                        ClaimedGame.code.isnot(None),
+                        ClaimedGame.code != ""
+                    ).limit(1)
+                    result = await session.execute(stmt)
+                    has_pending = result.scalars().first() is not None
+            
+            if has_pending:
+                from src.stores.gog import GOGClaimer
+                gog = GOGClaimer()
+                await gog.redeem_pending_codes()
+                if gog.notify_games:
+                    gog_entry = next((e for e in aggregated_results if e["store"] == "GOG"), None)
+                    if gog_entry:
+                        gog_entry["games"].extend(gog.notify_games)
+                    else:
+                        aggregated_results.append({"store": "GOG", "user": gog.user, "games": gog.notify_games})
             else:
-                stmt = select(ClaimedGame).where(
-                    ClaimedGame.status == "claimed",
-                    ClaimedGame.code.isnot(None),
-                    ClaimedGame.code != ""
-                ).limit(1)
-                result = await session.execute(stmt)
-                has_pending = result.scalars().first() is not None
-        
-        if has_pending:
-            from src.stores.gog import GOGClaimer
-            gog = GOGClaimer()
-            await gog.redeem_pending_codes()
-        else:
-            logger.debug("No pending GOG codes to redeem.")
-    except Exception:
-        logger.exception("Failed to run post-claim GOG code redemption")
+                logger.debug("No pending GOG codes to redeem.")
+        except Exception:
+            logger.exception("Failed to run post-claim GOG code redemption")
+
+    # Final Summary Notification
+    if cfg.notify_summary and aggregated_results:
+        from src.core.notifier import format_game_list
+        msg_parts = []
+        for result in aggregated_results:
+            # Filter out games that were "existed" or "already redeemed"
+            relevant_games = [
+                g for g in result["games"]
+                if "status" in g 
+                and "exist" not in g["status"].lower() 
+                and "already" not in g["status"].lower()
+                and "skip" not in g["status"].lower()
+            ]
+            
+            if not relevant_games:
+                continue
+                
+            header = f"**{result['store']}** ({result['user']}):" if result.get('user') else f"**{result['store']}**:"
+            msg_parts.append(f"{header}\n{format_game_list(relevant_games)}")
+            
+        if msg_parts:
+            final_msg = "\n\n".join(msg_parts)
+            await notify(final_msg)
 
     logger.info("✔ Claiming run complete.")
 
@@ -216,6 +257,25 @@ async def main() -> None:
     _print_banner()
     await init_db()
     logger.info("Database ready.")
+
+    if cfg.reset_db_games:
+        try:
+            from datetime import datetime, timedelta, timezone
+            from src.core.database import async_session, ClaimedGame
+            from sqlalchemy import delete
+            
+            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            
+            async with async_session() as session:
+                stmt = delete(ClaimedGame).where(ClaimedGame.created_at >= seven_days_ago)
+                res = await session.execute(stmt)
+                if res.rowcount > 0:
+                    logger.info("Reset %d entry(s) from the last 7 days from history.", res.rowcount)
+                else:
+                    logger.debug("DB reset requested, but no entries found from the last 7 days.")
+                await session.commit()
+        except Exception as e:
+            logger.error("Failed to reset DB games: %s", e)
 
     # If --once flag is set, run a single pass and exit
     if "--once" in sys.argv:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -86,11 +87,10 @@ class EpicGamesClaimer(BaseClaimer):
             if cfg.notify_errors:
                 await notify(f"epic-games failed: {exc}")
         finally:
-            # Send a notification with a summary of all claimed/failed games
-            claimed_or_failed = [g for g in self.notify_games if g["status"] in ("claimed", "failed")]
-            if claimed_or_failed and cfg.notify_summary:
-                msg = f"**Epic Games** ({self.user}):\n{format_game_list(self.notify_games)}"
-                await notify(msg)
+            # We DO NOT notify individually here anymore - we just return it to the orchestrator
+            # (Exception: We still keep error notifications inside logic if needed, but summary is deferred)
+            logger.info("Epic Games claimer finished.")
+
             # Always close the browser when done
             await self.close_browser()
 
@@ -119,20 +119,64 @@ class EpicGamesClaimer(BaseClaimer):
         
         # Navigate to Epic Store frontend to initialize cookies/session natively
         await self.page.get("https://store.epicgames.com/")
-        await self.sleep(3)
+        await self.sleep(5)  # Give the SPA + web components time to hydrate
 
         async def _is_logged_in() -> bool:
-            """Check if logged in by reading Epic's navigation bar attribute."""
+            """Check login via multiple DOM signals (egs-navigation attribute can be unreliable)."""
             return await self.page.evaluate(
-                """document.querySelector('egs-navigation')?.getAttribute('isloggedin') === 'true'"""
+                """
+                (() => {
+                    // Signal 1: egs-navigation web component attribute (legacy, may not work)
+                    const nav = document.querySelector('egs-navigation');
+                    if (nav && nav.getAttribute('isloggedin') === 'true') return true;
+
+                    // Signal 2: Wishlist / Cart links only visible when logged in
+                    const links = document.querySelectorAll('a');
+                    for (const a of links) {
+                        const href = (a.getAttribute('href') || '').toLowerCase();
+                        if (href.includes('/wishlist') || href.includes('/cart')) return true;
+                    }
+
+                    // Signal 3: User avatar icon present (logged-in navbar shows avatar, not "Sign In")
+                    const signInBtn = document.querySelector('a[href*="/login"], button');
+                    const allText = document.body?.innerText || '';
+                    // If "Sign in" text is prominent in the nav area, we're NOT logged in
+                    const navText = (nav?.shadowRoot?.innerHTML || nav?.innerHTML || '').toLowerCase();
+                    if (navText.includes('sign in') || navText.includes('sign_in')) return false;
+
+                    // Signal 4: Check for avatar element in the navigation
+                    if (nav?.shadowRoot) {
+                        const avatar = nav.shadowRoot.querySelector('img[alt*="avatar"], [class*="avatar"], [class*="user"]');
+                        if (avatar) return true;
+                    }
+
+                    return false;
+                })()
+                """
             )
 
-        if await _is_logged_in():
-            self.user = await self.page.evaluate(
-                """document.querySelector('egs-navigation')?.getAttribute('displayname')"""
-            )
-            self.log_signed_in()
-            return
+        async def _get_display_name() -> str:
+            """Try to extract the display name from the navigation component."""
+            return await self.page.evaluate(
+                """
+                (() => {
+                    const nav = document.querySelector('egs-navigation');
+                    if (nav) {
+                        const name = nav.getAttribute('displayname');
+                        if (name) return name;
+                    }
+                    return '';
+                })()
+                """
+            ) or ""
+
+        # Retry a few times — the web component loads asynchronously
+        for _ in range(3):
+            if await _is_logged_in():
+                self.user = await _get_display_name() or cfg.eg_email or "EpicUser"
+                self.log_signed_in()
+                return
+            await self.sleep(2)
 
         # Read credentials from the .env file
         email, password = cfg.eg_email, cfg.eg_password
@@ -146,9 +190,7 @@ class EpicGamesClaimer(BaseClaimer):
                 logger.warning("VNC login timed out – skipping.")
                 return
             
-            self.user = await self.page.evaluate(
-                """document.querySelector('egs-navigation')?.getAttribute('displayname')"""
-            )
+            self.user = await _get_display_name() or cfg.eg_email or "EpicUser"
             self.log_signed_in()
             return
 
@@ -167,7 +209,9 @@ class EpicGamesClaimer(BaseClaimer):
             
             # Wait loop to detect auth completion or interstitial
             for wait_sec in range(120):
-                if "login" not in self.page.url:
+                # We know auth is complete when Epic redirects us back to the store domain.
+                # Checking for "login not in url" was fragile because CAPTCHAs use /id/challenge.
+                if "store.epicgames.com" in self.page.url:
                     break
                     
                 if "login/review" in self.page.url:
@@ -211,9 +255,7 @@ class EpicGamesClaimer(BaseClaimer):
             await self.page.get(URL_CLAIM)
             await self.sleep(3)
             if await _is_logged_in():
-                self.user = await self.page.evaluate(
-                    """document.querySelector('egs-navigation')?.getAttribute('displayname')"""
-                )
+                self.user = await _get_display_name() or cfg.eg_email or "EpicUser"
                 self.log_signed_in()
                 return
         
@@ -491,34 +533,64 @@ class EpicGamesClaimer(BaseClaimer):
             await self.page.get(url)
             await self.sleep(4)
 
-            # Wait for the purchase button to fully load (it starts as empty or "Loading")
-            # We retry up to 10 times (10 seconds) until it shows meaningful text
-            btn_text = ""
-            for _ in range(10):
-                btn_text = await self.page.evaluate(
+            # ── Handle mature content / age gate ──
+            await self._click_page_button_by_text("Continue", timeout=2, log="mature content gate")
+
+            # ── Detect page state: find the primary action button ──
+            # Epic has two checkout flows:
+            #   NEW (2025+): Direct "Add to library" / "Get" button on checkout overlay
+            #   OLD: "purchase-cta-button" data-testid + payment iframe
+            btn_info = {"text": "", "flow": "unknown"}
+            for _ in range(15):
+                btn_raw = await self.page.evaluate(
                     """
-                    (() => {
-                        const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
-                        if (!btn) return '';
-                        const t = btn.textContent.trim().toLowerCase();
-                        if (!t || t === 'loading') return '';
-                        return t;
-                    })()
+                    JSON.stringify((() => {
+                        // NEW flow: "Add to library" button (checkout overlay)
+                        const allBtns = [...document.querySelectorAll('button')];
+                        for (const btn of allBtns) {
+                            const t = (btn.textContent || '').trim().toLowerCase();
+                            if (t.includes('add to library')) return { text: t, flow: 'new_add' };
+                        }
+
+                        // Check for "Get" button FIRST (new flow, even if it has purchase-cta-button testid)
+                        for (const btn of allBtns) {
+                            const t = (btn.textContent || '').trim().toLowerCase();
+                            if (t === 'get') return { text: t, flow: 'new_get' };
+                        }
+
+                        // OLD flow: purchase-cta-button (only if text is NOT "get")
+                        const oldBtn = document.querySelector('button[data-testid="purchase-cta-button"]');
+                        if (oldBtn) {
+                            const t = oldBtn.textContent.trim().toLowerCase();
+                            if (t && t !== 'loading' && t !== 'get') return { text: t, flow: 'old_cta' };
+                        }
+
+                        // Check for "In Library" / "Owned" status
+                        for (const btn of allBtns) {
+                            const t = (btn.textContent || '').trim().toLowerCase();
+                            if (t.includes('in library') || t.includes('owned')) return { text: t, flow: 'owned' };
+                        }
+
+                        return { text: '', flow: 'unknown' };
+                    })())
                     """
                 )
-                if btn_text:
+                try:
+                    btn_info = json.loads(btn_raw) if isinstance(btn_raw, str) else {"text": "", "flow": "unknown"}
+                except (json.JSONDecodeError, TypeError):
+                    btn_info = {"text": "", "flow": "unknown"}
+                if btn_info.get("text"):
                     break
                 await self.sleep(1)
 
-            # ── Handle mature content / age gate (before GET click) ──
-            await self._click_page_button_by_text("Continue", timeout=2, log="mature content gate")
+            btn_text = btn_info.get("text", "")
+            flow_type = btn_info.get("flow", "unknown")
 
             # ── Read title ──
             title = await self.page.evaluate(
                 """
                 (() => {
                     // Check for bundle first
-                    const aboutBundle = document.querySelector('span');
                     const isBundlePage = [...document.querySelectorAll('span')]
                         .some(s => s.textContent === 'About Bundle');
                     if (isBundlePage) {
@@ -535,7 +607,7 @@ class EpicGamesClaimer(BaseClaimer):
             notify_game = {"title": title, "url": url, "status": "failed"}
             self.notify_games.append(notify_game)
 
-            if "in library" in btn_text:
+            if "in library" in btn_text or flow_type == "owned":
                 logger.info("'%s' already in library.", title)
                 obj.status = obj.status if obj.status == "claimed" else "existed"
                 notify_game["status"] = "existed"
@@ -549,35 +621,14 @@ class EpicGamesClaimer(BaseClaimer):
                 await session.commit()
                 return
 
-            # ── Click GET button ──
-            logger.info("Claiming '%s'...", title)
-            await self.page.evaluate(
-                """document.querySelector('button[data-testid="purchase-cta-button"]')?.click()"""
-            )
-            await self.sleep(2)
+            if not btn_text:
+                logger.warning("No purchase/claim button found for '%s'.", title)
+                obj.status = "failed"
+                await self.take_screenshot(f"epic_nobutton_{game_id}")
+                await session.commit()
+                return
 
-            # ── Handle "Device not supported" Continue dialog (AFTER GET) ──
-            # This is the exact issue from the user's screenshot!
-            # JS: page.click('button:has-text("Continue")').catch(_ => {});
-            await self._click_page_button_by_text("Continue", timeout=3, log="Device not supported")
-
-            # ── Handle "Yes, buy now" dialog ──
-            # JS: page.click('button:has-text("Yes, buy now")').catch(_ => {});
-            await self._click_page_button_by_text("Yes, buy now", timeout=1, log="already own partial")
-
-            # ── Handle End User License Agreement ──
-            # JS: check checkbox #agree, then click Accept
-            await self.page.evaluate(
-                """
-                (() => {
-                    const cb = document.querySelector('input#agree');
-                    if (cb && !cb.checked) cb.click();
-                    const btns = [...document.querySelectorAll('button')];
-                    const accept = btns.find(b => b.textContent.includes('Accept'));
-                    if (accept) accept.click();
-                })()
-                """
-            )
+            logger.info("Claiming '%s'... (flow: %s)", title, flow_type)
 
             if cfg.dryrun:
                 logger.info("DRYRUN – skipped '%s'.", title)
@@ -585,17 +636,45 @@ class EpicGamesClaimer(BaseClaimer):
                 await session.commit()
                 return
 
-            # The "Place Order" button is inside a cross-origin iframe (payment-store.epicgames.com).
-            # Normal page.evaluate() can't see inside cross-origin iframes due to browser security.
-            # We use Chrome DevTools Protocol (CDP) commands to create an isolated execution
-            # context inside the iframe and run JavaScript there.
-            await self.sleep(3)
-            claimed = await self._handle_purchase_iframe(title)
+            # ── NEW FLOW: "Add to library" or "Get" button (direct click, no iframe) ──
+            if flow_type in ("new_add", "new_get"):
+                claimed = await self._handle_new_checkout(title, flow_type)
+
+            # ── OLD FLOW: purchase-cta-button + payment iframe ──
+            elif flow_type == "old_cta":
+                await self.page.evaluate(
+                    """document.querySelector('button[data-testid="purchase-cta-button"]')?.click()"""
+                )
+                await self.sleep(2)
+
+                # Handle intermediate dialogs
+                await self._click_page_button_by_text("Continue", timeout=3, log="Device not supported")
+                await self._click_page_button_by_text("Yes, buy now", timeout=1, log="already own partial")
+
+                # Handle End User License Agreement
+                await self.page.evaluate(
+                    """
+                    (() => {
+                        const cb = document.querySelector('input#agree');
+                        if (cb && !cb.checked) cb.click();
+                        const btns = [...document.querySelectorAll('button')];
+                        const accept = btns.find(b => b.textContent.includes('Accept'));
+                        if (accept) accept.click();
+                    })()
+                    """
+                )
+
+                await self.sleep(3)
+                claimed = await self._handle_purchase_iframe(title)
+            else:
+                logger.warning("Unknown checkout flow '%s' for '%s'.", flow_type, title)
+                claimed = False
 
             if claimed:
+                import datetime
                 logger.info("✓ Claimed '%s' successfully!", title)
                 obj.status = "claimed"
-                obj.updated_at = None  # triggers onupdate
+                obj.updated_at = datetime.datetime.now(datetime.timezone.utc)
                 notify_game["status"] = "claimed"
             else:
                 logger.error("Failed to claim '%s'.", title)
@@ -608,7 +687,324 @@ class EpicGamesClaimer(BaseClaimer):
             await session.commit()
 
     # ------------------------------------------------------------------
-    # Purchase iframe handling (via CDP)
+    # NEW checkout flow: "Add to library" (2025+)
+    # ------------------------------------------------------------------
+
+    async def _handle_new_checkout(self, title: str, flow_type: str) -> bool:
+        """Handle Epic's new direct checkout flow (2025+).
+
+        Two variants:
+          new_add: "Add to library" is already visible → click it directly.
+          new_get: "Get" button on product page → Continue dialog → checkout
+                   overlay with "Add to library" → click it.
+
+        Uses CDP Input.dispatchMouseEvent for all clicks to bypass React
+        synthetic event handling.
+        """
+        try:
+            # ── Step 1: Click the initial button ("Get" or "Add to library") ──
+            initial_btn = "add to library" if flow_type == "new_add" else "get"
+            clicked = await self._cdp_click_element_by_text(initial_btn, timeout=5)
+
+            if not clicked:
+                logger.warning("Could not find '%s' button for '%s'.", initial_btn, title)
+                return False
+
+            logger.info("Clicked '%s' button for '%s'.", initial_btn, title)
+            await self.sleep(3)
+
+            # ── Step 2: Handle intermediate dialogs ──
+            # "Device not supported" → Continue
+            cont_clicked = await self._cdp_click_element_by_text("continue", timeout=5)
+            if cont_clicked:
+                logger.info("Clicked 'Continue' dialog. Waiting for checkout overlay...")
+                # The checkout overlay takes several seconds to load after Continue
+                await self.sleep(5)
+            else:
+                logger.debug("No 'Continue' dialog found, proceeding.")
+                await self.sleep(2)
+
+            # EULA / Terms acceptance (check before Add to library)
+            await self.page.evaluate(
+                """
+                (() => {
+                    const cb = document.querySelector('input#agree, input[type="checkbox"]');
+                    if (cb && !cb.checked) cb.click();
+                })()
+                """
+            )
+            await self._cdp_click_element_by_text("accept", timeout=1)
+            await self._cdp_click_element_by_text("i agree", timeout=1)
+
+            # ── Step 3: If we clicked "Get", wait for checkout overlay ──
+            if flow_type == "new_get":
+                logger.debug("Looking for 'Add to library' or 'I accept' on checkout overlay...")
+                add_clicked = False
+                accepted = False
+                
+                for attempt in range(25):
+                    # Check main page for Add to Library
+                    without_cdp = await self.page.evaluate("""
+                        (() => {
+                            const btns = [...document.querySelectorAll('button')];
+                            const btn = btns.find(b => {
+                                const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                return t.includes('add to library');
+                            });
+                            return btn ? true : false;
+                        })()
+                    """)
+                    
+                    if without_cdp and not add_clicked:
+                        logger.debug("Found 'Add to library' button. Clicking via CDP...")
+                        await self.sleep(1)
+                        add_clicked = await self._cdp_click_element_by_text("add to library", timeout=2)
+                        await self.sleep(2)
+                    
+                    # Search for 'I accept' on main page
+                    needs_accept = await self.page.evaluate("""
+                        (() => {
+                            const btns = [...document.querySelectorAll('button')];
+                            const btn = btns.find(b => {
+                                const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                return t.includes('i accept') || t.includes('i agree');
+                            });
+                            return btn ? true : false;
+                        })()
+                    """)
+                    if needs_accept and not accepted:
+                        logger.debug("Found 'I accept' (Right of Withdrawal) on main page. Clicking...")
+                        accepted = await self._cdp_click_element_by_text("accept", timeout=2)
+                        await self.sleep(2)
+
+                    # Also check inside the iframe for 'I accept' or 'Place Order' (just in case)
+                    frame_tree = await self.page.send(uc.cdp.page.get_frame_tree())
+                    iframe_frame_id = self._find_purchase_frame(frame_tree)
+                    
+                    if iframe_frame_id:
+                        ctx_id = await self.page.send(
+                            uc.cdp.page.create_isolated_world(
+                                frame_id=iframe_frame_id,
+                                grant_univeral_access=True,
+                            )
+                        )
+                        # Check "Add to library" inside iframe
+                        if not add_clicked:
+                            did_add = await self._eval_in_frame(ctx_id, """
+                                (() => {
+                                    const btns = [...document.querySelectorAll('button')];
+                                    const btn = btns.find(b => {
+                                        const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                        return t.includes('add to library');
+                                    });
+                                    if (btn) { btn.click(); return true; }
+                                    return false;
+                                })()
+                            """)
+                            if did_add:
+                                logger.debug("✓ Found and clicked 'Add to library' inside iframe.")
+                                add_clicked = True
+                                await self.sleep(2)
+
+                        # Check "I accept" inside iframe
+                        if not accepted:
+                            did_accept = await self._eval_in_frame(ctx_id, """
+                                (() => {
+                                    const btns = [...document.querySelectorAll('button')];
+                                    const btn = btns.find(b => {
+                                        const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                        return t.includes('i accept') || t.includes('i agree');
+                                    });
+                                    if (btn) { btn.click(); return true; }
+                                    return false;
+                                })()
+                            """)
+                            if did_accept:
+                                logger.debug("✓ Found and clicked 'I accept' inside iframe.")
+                                accepted = True
+                                await self.sleep(2)
+
+                    if add_clicked and accepted:
+                        # Once we've clicked Add and explicitly handled Accept, we can wait for verification
+                        # We don't break immediately, let already_done or the timeout push us forward
+                        pass
+
+                    # Also check if it was already confirmed (fallback checking main page)
+                    already_done = await self.page.evaluate(
+                        """
+                        (() => {
+                            const body = (document.body?.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+                            return body.includes('thank you') || body.includes('in library')
+                                || body.includes('in your library') || body.includes('successfully');
+                        })()
+                        """
+                    )
+                    if already_done:
+                        logger.info("Already confirmed without needing more clicks.")
+                        return True
+
+                    await self.sleep(2)
+
+                if not add_clicked:
+                    logger.warning("'Add to library' not found for '%s'. Taking screenshot.", title)
+                    await self.take_screenshot(f"epic_no_addlib_{title[:20]}")
+                    
+                    # Last resort: try Continue in case another dialog appeared
+                    await self._cdp_click_element_by_text("continue", timeout=3)
+                    await self.sleep(3)
+
+                await self.sleep(3)
+
+            elif flow_type == "new_add":
+                await self.sleep(3)
+
+            # ── Step 4: Verify claim success ──
+            for _ in range(15):
+                success = await self.page.evaluate(
+                    """
+                    (() => {
+                        function checkDoc(doc) {
+                            try {
+                                const body = (doc.body?.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+                                if (body.includes('thank you') || body.includes('successfully')
+                                    || (body.includes('in library') && !body.includes('add it to your library'))) return true;
+
+                                const btns = [...doc.querySelectorAll('button')];
+                                for (const btn of btns) {
+                                    const t = (btn.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                    if (t === 'in library') return true;
+                                }
+
+                                const frames = [...doc.querySelectorAll('iframe')];
+                                for (const f of frames) {
+                                    try {
+                                        if (f.contentDocument && checkDoc(f.contentDocument)) return true;
+                                    } catch(e) {}
+                                }
+                            } catch(e) {}
+                            return false;
+                        }
+                        return checkDoc(document);
+                    })()
+                    """
+                )
+                if success:
+                    return True
+                await self.sleep(1)
+
+            logger.warning("No confirmation found after checkout for '%s'.", title)
+            return False
+
+        except Exception:
+            logger.exception("Error in new checkout flow for '%s'.", title)
+            return False
+
+    async def _cdp_click_element_by_text(
+        self, text: str, *, tag: str = "button", timeout: int = 1
+    ) -> bool:
+        """Click an element using CDP Input.dispatchMouseEvent (real mouse click).
+
+        This is the most reliable click method — it sends actual browser-level
+        mouse input at the element's pixel coordinates, bypassing all
+        JavaScript event handling (including React synthetic events).
+
+        Sends: mouseMoved → mousePressed → mouseReleased (like a real human).
+        """
+        import asyncio
+
+        for attempt in range(max(1, timeout)):
+            # Step 1: Find element recursively in main doc and all iframes
+            coords_raw = await self.page.evaluate(
+                """
+                JSON.stringify((() => {
+                    function findEl(doc, ox, oy) {
+                        try {
+                            const btns = [...doc.querySelectorAll('%s')];
+                            const btn = btns.find(b => (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase().includes('%s'));
+                            if (btn) {
+                                btn.scrollIntoView({ block: 'center', behavior: 'instant' });
+                                const rect = btn.getBoundingClientRect();
+                                return { 
+                                    x: ox + rect.x + rect.width / 2, 
+                                    y: oy + rect.y + rect.height / 2,
+                                    w: rect.width, h: rect.height
+                                };
+                            }
+                            // Search iframes
+                            const frames = [...doc.querySelectorAll('iframe')];
+                            for (const f of frames) {
+                                try {
+                                    if (f.contentDocument) {
+                                        const fRect = f.getBoundingClientRect();
+                                        const res = findEl(f.contentDocument, ox + fRect.x, oy + fRect.y);
+                                        if (res) return res;
+                                    }
+                                } catch(e) {}
+                            }
+                        } catch(e) {}
+                        return null;
+                    }
+                    return findEl(document, 0, 0);
+                })())
+                """ % (tag, text)
+            )
+
+            try:
+                coords = json.loads(coords_raw) if isinstance(coords_raw, str) else None
+            except (json.JSONDecodeError, TypeError):
+                coords = None
+
+            if not coords:
+                await self.sleep(1)
+                continue
+
+            x, y = coords["x"], coords["y"]
+            logger.debug("Found '%s' at (%.0f, %.0f) size %.0fx%.0f", text, x, y, coords.get("w", 0), coords.get("h", 0))
+
+            # Step 2: Send CDP mouse events (mouseMoved → mousePressed → mouseReleased)
+            try:
+                # First move the mouse to the target (required for proper event routing)
+                await self.page.send(
+                    uc.cdp.input_.dispatch_mouse_event(
+                        type_="mouseMoved",
+                        x=x,
+                        y=y,
+                    )
+                )
+                await asyncio.sleep(0.05)
+
+                # Press
+                await self.page.send(
+                    uc.cdp.input_.dispatch_mouse_event(
+                        type_="mousePressed",
+                        x=x,
+                        y=y,
+                        button=uc.cdp.input_.MouseButton("left"),
+                        click_count=1,
+                    )
+                )
+                await asyncio.sleep(0.1)
+
+                # Release
+                await self.page.send(
+                    uc.cdp.input_.dispatch_mouse_event(
+                        type_="mouseReleased",
+                        x=x,
+                        y=y,
+                        button=uc.cdp.input_.MouseButton("left"),
+                        click_count=1,
+                    )
+                )
+                logger.debug("CDP click OK at (%.0f, %.0f) for '%s'.", x, y, text)
+                return True
+            except Exception as exc:
+                logger.warning("CDP click failed for '%s': %s", text, exc)
+                await self.sleep(1)
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Purchase iframe handling (via CDP) — OLD flow
     # ------------------------------------------------------------------
 
     async def _handle_purchase_iframe(self, title: str) -> bool:
@@ -721,13 +1117,31 @@ class EpicGamesClaimer(BaseClaimer):
                 })()
             """)
 
-            # Wait for "Thanks for your order!" on the MAIN page
+            # Wait for order confirmation on the MAIN page
+            # Epic shows either "Thanks for your order!" or "It's all yours" dialog
             for _ in range(20):
                 await self.sleep(2)
-                thanks = await self.page.evaluate(
-                    """document.body?.innerText?.toLowerCase()?.includes('thanks for your order') || false"""
-                )
-                if thanks:
+                confirmed = await self.page.evaluate("""
+                    (() => {
+                        const body = (document.body?.innerText || '').toLowerCase();
+                        return body.includes('thanks for your order') ||
+                               body.includes("it's all yours") ||
+                               body.includes('thank you for buying');
+                    })()
+                """)
+                if confirmed:
+                    # Click "Continue browsing" to dismiss the success dialog
+                    await self.page.evaluate("""
+                        (() => {
+                            const btns = [...document.querySelectorAll('button, a')];
+                            const cb = btns.find(b => {
+                                const t = (b.textContent || '').trim().toLowerCase();
+                                return t === 'continue browsing' || t.includes('continue');
+                            });
+                            if (cb) cb.click();
+                        })()
+                    """)
+                    await self.sleep(1)
                     return True
 
             logger.warning("Timed out waiting for order confirmation for '%s'", title)
@@ -798,7 +1212,8 @@ class EpicGamesClaimer(BaseClaimer):
         return False
 
 
-async def claim_epic() -> None:
+async def claim_epic() -> dict:
     """Convenience entry point."""
     claimer = EpicGamesClaimer()
     await claimer.run()
+    return {"store": "Epic Games", "user": claimer.user, "games": claimer.notify_games}

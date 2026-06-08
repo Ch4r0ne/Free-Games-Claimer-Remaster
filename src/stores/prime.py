@@ -82,10 +82,10 @@ class PrimeGamingClaimer(BaseClaimer):
             except Exception as e:
                 logger.error("Failed to export legacy JSON: %s", e)
 
-            # Send a notification summary of all claimed games
+            # Summary notifications
             if self.notify_games and cfg.notify_summary:
-                msg = f"**Prime Gaming** ({self.user}):\n{format_game_list(self.notify_games)}"
-                await notify(msg)
+                self.logger.info("Prime Gaming claimer finished with %d games.", len(self.notify_games))
+
             # Always close the browser when done
             await self.close_browser()
 
@@ -130,7 +130,7 @@ class PrimeGamingClaimer(BaseClaimer):
     # Login
     # ------------------------------------------------------------------
 
-    async def _ensure_logged_in(self) -> None:
+    async def _ensure_logged_in(self, silent_if_logged_in: bool = False) -> None:
         """Check if logged in; if not, click 'Sign in' in a loop until logged in.
 
         Matches the JS pattern: sometimes after Amazon login completes,
@@ -177,8 +177,12 @@ class PrimeGamingClaimer(BaseClaimer):
             return data.get("found", False)
 
         if await _is_logged_in():
-            self.log_signed_in()
+            if not silent_if_logged_in:
+                self.log_signed_in()
             return
+            
+        if silent_if_logged_in:
+            logger.warning("Session lost mid-operation! Attempting re-login…")
 
         # --- Login loop: keep clicking "Sign in" until logged in ---
         email, password = cfg.pg_email, cfg.pg_password
@@ -278,7 +282,7 @@ class PrimeGamingClaimer(BaseClaimer):
             await submit_btn.click()
             await self.sleep(4)
 
-        # Handle MFA
+        # Handle MFA (TOTP authenticator app)
         if cfg.pg_otpkey:
             await self.sleep(3)
             try:
@@ -293,6 +297,76 @@ class PrimeGamingClaimer(BaseClaimer):
                         await self.sleep(4)
             except Exception:
                 pass  # No MFA prompt
+
+        # Handle Amazon security code verification (shopping app push / SMS code).
+        # Amazon may ask the user to enter a code sent to their Amazon shopping app
+        # or via SMS. This requires manual intervention via VNC.
+        await self._handle_security_code_challenge()
+
+    # ------------------------------------------------------------------
+    # Amazon security code (2FA via shopping app / SMS)
+    # ------------------------------------------------------------------
+
+    async def _handle_security_code_challenge(self) -> None:
+        """Detect and handle Amazon's security code verification page.
+
+        Amazon sometimes requires a security code sent via the Amazon shopping
+        app or SMS after login. This page shows "Enter security code" with a
+        text input and a "Verify" button. Since we can't read the code
+        programmatically, we notify the user and wait for manual VNC entry.
+        """
+        # Give page a bit more time to render any popups/challenges
+        await self.sleep(2)
+        
+        # Check if we landed on a security code page
+        is_security_page = await self.page.evaluate("""
+            (() => {
+                const body = (document.body?.innerText || '').toLowerCase();
+                // Detect both English and common variations, including SMS OTP
+                return body.includes('enter security code') ||
+                       body.includes('security code') && body.includes('verify') ||
+                       body.includes('enter your code') && body.includes('amazon') ||
+                       body.includes('approval required') ||
+                       body.includes('approve the notification') ||
+                       body.includes('two-step verification') ||
+                       body.includes('one time password') ||
+                       body.includes('text message with a one time password');
+            })()
+        """)
+
+        if not is_security_page:
+            return
+
+        logger.warning("⚠️ Amazon security code verification required! "
+                       "Enter the code via VNC (noVNC web interface).")
+
+        # _wait_for_vnc_login already sends a clean notification with the
+        # correct localhost URL, so we don't send a separate one here.
+
+        # Wait for the user to enter the code and the page to move on.
+        # Uses the same timeout as VNC manual login (VNC_LOGIN_TIMEOUT).
+        async def _security_code_done() -> bool:
+            body = await self.page.evaluate(
+                "(document.body?.innerText || '').toLowerCase()"
+            )
+            # If the page no longer shows the security code prompt, we're done
+            return not (
+                'enter security code' in body or
+                'approval required' in body or
+                ('security code' in body and 'verify' in body) or
+                'two-step verification' in body or
+                'one time password' in body
+            )
+
+        msg = (f"**{self.store_name}** requires Amazon SMS/2FA Verification! "
+               f"Open http://localhost:{cfg.novnc_port or 7080} to enter the OTP code via VNC "
+               f"(waiting {cfg.vnc_login_timeout}s).")
+
+        resolved = await self._wait_for_vnc_login(_security_code_done, custom_msg=msg)
+        if resolved:
+            logger.info("✓ Security code accepted — continuing.")
+        else:
+            logger.warning("Security code timeout — login may have failed.")
 
     # ------------------------------------------------------------------
     # Scroll until stable (port from original JS)
@@ -350,12 +424,46 @@ class PrimeGamingClaimer(BaseClaimer):
             await self.sleep(3)
 
     # ------------------------------------------------------------------
+    # Session recovery
+    # ------------------------------------------------------------------
+
+    async def _ensure_page_alive(self) -> None:
+        """Check if the CDP tab/session is still responsive. If not, recover it.
+
+        After login (especially VNC manual login), the browser may open a new tab
+        or the original tab's CDP session may become invalid. This method detects
+        that and re-attaches to a working tab so navigation doesn't crash.
+        """
+        try:
+            # Quick health check: try to read the current URL
+            await self.page.evaluate("window.location.href")
+        except Exception:
+            logger.warning("CDP session lost — attempting to recover...")
+            try:
+                # Get all open tabs from the browser and pick the first valid one
+                tabs = self.browser.tabs
+                if tabs:
+                    self.page = tabs[0]
+                    logger.info("Recovered CDP session on tab: %s", self.page.target.url)
+                else:
+                    # No tabs at all — open a fresh one
+                    self.page = await self.browser.get("about:blank")
+                    logger.info("Opened new tab after session loss.")
+            except Exception:
+                logger.exception("Session recovery failed — opening fresh tab.")
+                self.page = await self.browser.get("about:blank")
+
+    # ------------------------------------------------------------------
     # Claim games
     # ------------------------------------------------------------------
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
     async def _claim_internal_games(self) -> None:
         """Navigate to the games tab, load all, show stats, and claim."""
+        # Ensure the CDP session is still alive before navigating
+        # (login flow or VNC interaction may have invalidated the tab reference)
+        await self._ensure_page_alive()
+
         await self.page.get(URL_CLAIM)
         await self.sleep(4)
 
@@ -519,18 +627,21 @@ class PrimeGamingClaimer(BaseClaimer):
                         if (detailUrl) {{
                             const slugMatch = detailUrl.match(/\/claims\/(.+?)\/dp\//);
                             if (slugMatch) {{
-                                const slug = slugMatch[1];
+                                const slug = slugMatch[1].toLowerCase();
                                 const platformMap = {{
                                     'epic': 'epic games',
                                     'gog': 'gog',
                                     'legacy': 'legacy games',
                                     'aga': 'amazon',
                                 }};
-                                // The platform tag is the last hyphen-separated segment
+                                // Scan ALL hyphen-separated segments (from end to start)
+                                // because the platform tag can appear anywhere in the slug
                                 const parts = slug.split('-');
-                                const lastPart = parts[parts.length - 1];
-                                if (platformMap[lastPart]) {{
-                                    platform = platformMap[lastPart];
+                                for (let i = parts.length - 1; i >= 0; i--) {{
+                                    if (platformMap[parts[i]]) {{
+                                        platform = platformMap[parts[i]];
+                                        break;
+                                    }}
                                 }}
                             }}
                         }}
@@ -609,6 +720,9 @@ class PrimeGamingClaimer(BaseClaimer):
         if cfg.dryrun:
             logger.info("DRYRUN – skipped '%s'.", title)
             return
+            
+        # Ensure session hasn't expired mid-loop before processing the card
+        await self._ensure_logged_in(silent_if_logged_in=True)
 
         try:
             claimed = await self.page.evaluate(
@@ -670,6 +784,9 @@ class PrimeGamingClaimer(BaseClaimer):
             logger.info("DRYRUN – skipped external '%s'.", title)
             return
 
+        # Ensure session hasn't expired mid-loop before processing the card
+        await self._ensure_logged_in(silent_if_logged_in=True)
+
         try:
             # Navigate directly to the detail page if we have a detail URL
             # This is more reliable than finding and clicking the card by title
@@ -678,6 +795,28 @@ class PrimeGamingClaimer(BaseClaimer):
                 full_detail_url = BASE_URL + detail_url if detail_url.startswith('/') else detail_url
                 await self.page.get(full_detail_url)
                 await self.sleep(4)
+
+                # Check if session was lost after navigation (Amazon sometimes
+                # drops the auth when navigating to game detail pages)
+                is_signed_out = await self.page.evaluate("""
+                    (() => {
+                        const btns = Array.from(document.querySelectorAll('button, a'));
+                        return btns.some(b => {
+                            const t = (b.textContent || '').trim();
+                            return t === 'Sign in' || t === 'Try Prime';
+                        });
+                    })()
+                """)
+                if is_signed_out:
+                    logger.warning("Session lost on detail page for '%s' — attempting re-login…", title)
+                    # Navigate back to claims page and re-authenticate
+                    await self.page.get(URL_CLAIM)
+                    await self.sleep(3)
+                    await self._ensure_logged_in()
+                    # Navigate back to the detail page after re-login
+                    await self.page.get(full_detail_url)
+                    await self.sleep(4)
+
                 claimed = True
             else:
                 # Fallback: try clicking the card on the claims page
@@ -750,7 +889,25 @@ class PrimeGamingClaimer(BaseClaimer):
             # Use platform from URL slug as primary store identification
             store = platform or 'unknown'
             
-            # If URL slug didn't give us a platform, try text-based detection as fallback
+            # If URL slug didn't give us a platform, check the current page URL (fallback for click-navigated pages)
+            if store == 'unknown':
+                current_url = str(await self.page.evaluate("window.location.href"))
+                import re
+                slug_match = re.search(r'/claims/(.+?)/dp/', current_url)
+                if slug_match:
+                    slug = slug_match.group(1).lower()
+                    platform_map = {
+                        'epic': 'epic games',
+                        'gog': 'gog',
+                        'legacy': 'legacy games',
+                        'aga': 'amazon',
+                    }
+                    for part in reversed(slug.split('-')):
+                        if part in platform_map:
+                            store = platform_map[part]
+                            break
+
+            # If still unknown, try text-based detection as fallback
             if store == 'unknown':
                 store_raw = await self.page.evaluate(
                     """
@@ -917,7 +1074,8 @@ class PrimeGamingClaimer(BaseClaimer):
 
 
 
-async def claim_prime() -> None:
+async def claim_prime() -> dict:
     """Convenience entry point."""
     claimer = PrimeGamingClaimer()
     await claimer.run()
+    return {"store": "Prime Gaming", "user": claimer.user, "games": claimer.notify_games}
