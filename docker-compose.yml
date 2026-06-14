@@ -3,7 +3,7 @@ services:
   # Free Games Claimer Remaster
   # ---------------------------------------------------------------
   app:
-    image: free-games-claimer-remaster
+    image: ghcr.io/p-adamiec/free-games-claimer-remaster:latest
     container_name: fgc-remaster
     build: .
     restart: unless-stopped
