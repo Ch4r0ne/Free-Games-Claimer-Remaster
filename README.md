@@ -100,6 +100,7 @@ Options are set via environment variables in `.env`:
 | `WIDTH` | `1280` | Browser/VNC screen width. |
 | `HEIGHT` | `720` | Browser/VNC screen height. |
 | `NOVNC_PORT` | `7080` | noVNC web access port. |
+| `VNC_IP` | `localhost`| Custom IP/Hostname for VNC notification links. |
 | `SCHEDULER_HOURS`| `12` | Hours interval for the built-in scheduler runs. |
 | `VNC_LOGIN_TIMEOUT`| `180` | Seconds to wait for you to log in via VNC manually. |
 | `EG_EMAIL` | | Epic Games login email. |

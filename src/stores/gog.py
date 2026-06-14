@@ -322,7 +322,7 @@ class GOGClaimer(BaseClaimer):
                 logged_in = await self._wait_for_vnc_login(
                     _vnc_check_gog_2fa, 
                     timeout=180,
-                    custom_msg="GOG requires 2FA verification! Open http://localhost:7080 to enter the code via VNC..."
+                    custom_msg=f"GOG requires 2FA verification! Open http://{cfg.vnc_ip}:{cfg.novnc_port or 7080} to enter the code via VNC..."
                 )
                 if logged_in:
                     self.log_signed_in()

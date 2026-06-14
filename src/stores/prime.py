@@ -359,7 +359,7 @@ class PrimeGamingClaimer(BaseClaimer):
             )
 
         msg = (f"**{self.store_name}** requires Amazon SMS/2FA Verification! "
-               f"Open http://localhost:{cfg.novnc_port or 7080} to enter the OTP code via VNC "
+               f"Open http://{cfg.vnc_ip}:{cfg.novnc_port or 7080} to enter the OTP code via VNC "
                f"(waiting {cfg.vnc_login_timeout}s).")
 
         resolved = await self._wait_for_vnc_login(_security_code_done, custom_msg=msg)

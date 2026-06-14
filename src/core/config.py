@@ -56,6 +56,7 @@ class Config:
     login_timeout: int = _int("LOGIN_TIMEOUT", 180) * 1000  # ms
     vnc_login_timeout: int = _int("VNC_LOGIN_TIMEOUT", 180) # seconds
     novnc_port: str | None = os.getenv("NOVNC_PORT")
+    vnc_ip: str = os.getenv("VNC_IP", "localhost")
     scheduler_hours: int = _int("SCHEDULER_HOURS", 12)
 
     # --- DB Reset ---

@@ -352,8 +352,8 @@ class BaseClaimer:
             self.logger.info(custom_msg.replace("**", "").replace("!", ""))
         else:
             if cfg.novnc_port:
-                self.logger.info("Open http://localhost:%s to login manually (waiting %ds).", cfg.novnc_port, timeout)
-                msg = f"**{self.store_name}** requires manual login! Open http://localhost:{cfg.novnc_port} to login via VNC (waiting {timeout}s)."
+                self.logger.info("Open http://%s:%s to login manually (waiting %ds).", cfg.vnc_ip, cfg.novnc_port, timeout)
+                msg = f"**{self.store_name}** requires manual login! Open http://{cfg.vnc_ip}:{cfg.novnc_port} to login via VNC (waiting {timeout}s)."
             else:
                 self.logger.info("Please login via VNC (waiting %ds).", timeout)
                 msg = f"**{self.store_name}** requires manual login via VNC (waiting {timeout}s)."
