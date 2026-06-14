@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [1.1] – 2026-06-08
 
 ### Added
+- **Docker GHCR modernization (PR #5 by @Ch4r0ne)** – elegantly overhauled the GHCR image publishing workflow utilizing the official `docker/metadata-action`, standardizing dynamic tags (`main`, `latest`, `v*.*`) seamlessly via a dedicated `.github/workflows/docker-ghcr.yml`.
+- **Remote VNC Customization (`VNC_IP`)** – users orchestrating the project on a remote NAS/server can now configure `VNC_IP` (defaults to `localhost`) to explicitly define the hyperlink printed in Discord 2FA/login notifications.
 - **Database Games Reset (`RESET_DB_GAMES`)** – A new environment variable allows users to set it to `true` to retroactively erase any database claims recorded within the last 7 days upon initialization, ensuring the bot will retry claiming them.
 - **Unified Master Notification** – Individual stores no longer send asynchronous Discord alerts immediately upon process completion. Instead, the orchestrator caches and aggregates all outcomes across platform limits, submitting a single tidy report segmented by store.
 - **GamerPower standalone store** (`src/stores/gamerpower.py`) – GamerPower is now a fully separate module that routes external keys to Fanatical, Alienware, Itch.io, and IndieGala. It runs last by default to deduplicate against Steam, Epic, and GOG libraries globally. It can be selected via the `gamerpower` or `gp` alias in the `STORES` configuration. This store feature is still experimental and may not work as expected.
