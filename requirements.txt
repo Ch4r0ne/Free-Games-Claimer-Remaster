@@ -21,7 +21,7 @@ pyotp>=2.9
 python-dotenv>=1.1
 
 # Logging / Console output
-rich>=14.0
+rich>=15.0.0
 
 # HTTP client
 httpx>=0.28
