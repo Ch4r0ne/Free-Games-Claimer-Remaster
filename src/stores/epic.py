@@ -80,7 +80,12 @@ class EpicGamesClaimer(BaseClaimer):
 
             # --- Claim each game ---
             for game in free_games:
-                await self._claim_game(game["url"])
+                try:
+                    await self._claim_game(game["url"])
+                except Exception:
+                    logger.exception("Failed while claiming '%s'; continuing with remaining games.", game["title"])
+                    if not any(g.get("url") == game["url"] for g in self.notify_games):
+                        self.notify_games.append({"title": game["title"], "url": game["url"], "status": "failed"})
 
         except Exception as exc:
             logger.exception("Fatal error")
@@ -681,8 +686,6 @@ class EpicGamesClaimer(BaseClaimer):
                 obj.status = "failed"
                 notify_game["status"] = "failed"
                 await self.take_screenshot(f"epic_failed_{game_id}")
-                if cfg.notify_claim_fails:
-                    await notify(f"epic-games: failed to claim {title}")
 
             await session.commit()
 
@@ -738,91 +741,68 @@ class EpicGamesClaimer(BaseClaimer):
 
             # ── Step 3: If we clicked "Get", wait for checkout overlay ──
             if flow_type == "new_get":
-                logger.debug("Looking for 'Add to library' or 'I accept' on checkout overlay...")
+                logger.debug("Looking for checkout state after 'Get'...")
                 add_clicked = False
                 accepted = False
                 
                 for attempt in range(25):
-                    # Check main page for Add to Library
-                    without_cdp = await self.page.evaluate("""
+                    state = await self.page.evaluate("""
                         (() => {
+                            const body = (document.body?.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+                            if (body.includes('thank you') || body.includes("it's all yours")
+                                || body.includes('successfully') || body.includes('in your library')) {
+                                return 'success';
+                            }
+                            if ((body.includes('in library') && !body.includes('add it to your library'))
+                                || body.includes('owned')) {
+                                return 'owned';
+                            }
+
                             const btns = [...document.querySelectorAll('button')];
-                            const btn = btns.find(b => {
+                            for (const b of btns) {
                                 const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                                return t.includes('add to library');
-                            });
-                            return btn ? true : false;
+                                if (t === 'in library' || t.includes('owned')) return 'owned';
+                                if (t.includes('add to library')) return 'add';
+                                if (t.includes('place order')) return 'place_order';
+                                if (t.includes('i accept') || t.includes('i agree')) return 'accept';
+                            }
+
+                            if (document.querySelector('#webPurchaseContainer iframe')) return 'iframe';
+                            return '';
                         })()
                     """)
-                    
-                    if without_cdp and not add_clicked:
-                        logger.debug("Found 'Add to library' button. Clicking via CDP...")
+
+                    frame_tree = await self.page.send(uc.cdp.page.get_frame_tree())
+                    iframe_frame_id = self._find_purchase_frame(frame_tree)
+                    if state == "iframe" or iframe_frame_id:
+                        logger.info("After Get: purchase iframe detected")
+                        return await self._handle_purchase_iframe(title)
+
+                    if state == "success":
+                        logger.info("After Get: success confirmation detected")
+                        return True
+
+                    if state == "owned":
+                        logger.info("After Get: already owned / in library")
+                        return True
+
+                    if state == "add" and not add_clicked:
+                        logger.info("After Get: Add to library detected")
                         await self.sleep(1)
                         add_clicked = await self._cdp_click_element_by_text("add to library", timeout=2)
                         await self.sleep(2)
-                    
-                    # Search for 'I accept' on main page
-                    needs_accept = await self.page.evaluate("""
-                        (() => {
-                            const btns = [...document.querySelectorAll('button')];
-                            const btn = btns.find(b => {
-                                const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                                return t.includes('i accept') || t.includes('i agree');
-                            });
-                            return btn ? true : false;
-                        })()
-                    """)
-                    if needs_accept and not accepted:
-                        logger.debug("Found 'I accept' (Right of Withdrawal) on main page. Clicking...")
-                        accepted = await self._cdp_click_element_by_text("accept", timeout=2)
+
+                    if state == "place_order":
+                        logger.info("After Get: Place Order detected")
+                        await self._cdp_click_element_by_text("place order", timeout=2)
                         await self.sleep(2)
 
-                    # Also check inside the iframe for 'I accept' or 'Place Order' (just in case)
-                    frame_tree = await self.page.send(uc.cdp.page.get_frame_tree())
-                    iframe_frame_id = self._find_purchase_frame(frame_tree)
-                    
-                    if iframe_frame_id:
-                        ctx_id = await self.page.send(
-                            uc.cdp.page.create_isolated_world(
-                                frame_id=iframe_frame_id,
-                                grant_univeral_access=True,
-                            )
-                        )
-                        # Check "Add to library" inside iframe
-                        if not add_clicked:
-                            did_add = await self._eval_in_frame(ctx_id, """
-                                (() => {
-                                    const btns = [...document.querySelectorAll('button')];
-                                    const btn = btns.find(b => {
-                                        const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                                        return t.includes('add to library');
-                                    });
-                                    if (btn) { btn.click(); return true; }
-                                    return false;
-                                })()
-                            """)
-                            if did_add:
-                                logger.debug("✓ Found and clicked 'Add to library' inside iframe.")
-                                add_clicked = True
-                                await self.sleep(2)
-
-                        # Check "I accept" inside iframe
+                    if state == "accept" and not accepted:
+                        logger.info("After Get: I Accept / I Agree detected")
+                        accepted = await self._cdp_click_element_by_text("accept", timeout=2)
                         if not accepted:
-                            did_accept = await self._eval_in_frame(ctx_id, """
-                                (() => {
-                                    const btns = [...document.querySelectorAll('button')];
-                                    const btn = btns.find(b => {
-                                        const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                                        return t.includes('i accept') || t.includes('i agree');
-                                    });
-                                    if (btn) { btn.click(); return true; }
-                                    return false;
-                                })()
-                            """)
-                            if did_accept:
-                                logger.debug("✓ Found and clicked 'I accept' inside iframe.")
-                                accepted = True
-                                await self.sleep(2)
+                            accepted = await self._cdp_click_element_by_text("i agree", timeout=2)
+                        await self.sleep(2)
 
                     if add_clicked and accepted:
                         # Once we've clicked Add and explicitly handled Accept, we can wait for verification
@@ -845,13 +825,11 @@ class EpicGamesClaimer(BaseClaimer):
 
                     await self.sleep(2)
 
-                if not add_clicked:
-                    logger.warning("'Add to library' not found for '%s'. Taking screenshot.", title)
-                    await self.take_screenshot(f"epic_no_addlib_{title[:20]}")
-                    
-                    # Last resort: try Continue in case another dialog appeared
-                    await self._cdp_click_element_by_text("continue", timeout=3)
-                    await self.sleep(3)
+                logger.info("After Get: no supported checkout state detected")
+
+                # Last resort: try Continue in case another dialog appeared
+                await self._cdp_click_element_by_text("continue", timeout=3)
+                await self.sleep(3)
 
                 await self.sleep(3)
 
@@ -1022,7 +1000,8 @@ class EpicGamesClaimer(BaseClaimer):
                 has_iframe = await self.page.evaluate(
                     """!!document.querySelector('#webPurchaseContainer iframe')"""
                 )
-                if has_iframe:
+                frame_tree = await self.page.send(uc.cdp.page.get_frame_tree())
+                if has_iframe or self._find_purchase_frame(frame_tree):
                     break
                 await self.sleep(1)
             else:
@@ -1083,6 +1062,23 @@ class EpicGamesClaimer(BaseClaimer):
 
             # Click "Place Order" (wait for it to not be in loading state)
             for attempt in range(8):
+                agreed = await self._eval_in_frame(ctx_id, """
+                    (() => {
+                        const btns = [...document.querySelectorAll('button')];
+                        const agree = btns.find(b =>
+                            b.innerText && (
+                                b.innerText.toLowerCase().includes('i accept') ||
+                                b.innerText.toLowerCase().includes('i agree')
+                            )
+                        );
+                        if (agree && !agree.disabled) { agree.click(); return true; }
+                        return false;
+                    })()
+                """)
+                if agreed:
+                    logger.debug("Clicked agreement button for '%s'", title)
+                    await self.sleep(2)
+
                 clicked = await self._eval_in_frame(ctx_id, """
                     (() => {
                         const btns = [...document.querySelectorAll('button')];
@@ -1126,7 +1122,10 @@ class EpicGamesClaimer(BaseClaimer):
                         const body = (document.body?.innerText || '').toLowerCase();
                         return body.includes('thanks for your order') ||
                                body.includes("it's all yours") ||
-                               body.includes('thank you for buying');
+                               body.includes('thank you for buying') ||
+                               body.includes('thank you') ||
+                               body.includes('successfully') ||
+                               body.includes('in library');
                     })()
                 """)
                 if confirmed:
