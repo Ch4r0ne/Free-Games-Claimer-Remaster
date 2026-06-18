@@ -933,10 +933,15 @@ class EpicGamesClaimer(BaseClaimer):
                             if (btn) {
                                 btn.scrollIntoView({ block: 'center', behavior: 'instant' });
                                 const rect = btn.getBoundingClientRect();
-                                const x = rect.x + rect.width / 2;
-                                const y = rect.y + rect.height / 2;
+                                const left = Math.max(rect.left, 1);
+                                const right = Math.min(rect.right, window.innerWidth - 1);
+                                const topEdge = Math.max(rect.top, 1);
+                                const bottom = Math.min(rect.bottom, window.innerHeight - 1);
+                                if (right <= left || bottom <= topEdge) return null;
+                                const x = left + (right - left) / 2;
+                                const y = topEdge + (bottom - topEdge) / 2;
                                 const top = doc.elementFromPoint(x, y);
-                                if (top && !btn.contains(top) && top !== btn) return null;
+                                if (!top || (!btn.contains(top) && top !== btn)) return null;
                                 return {
                                     x: ox + x,
                                     y: oy + y,
