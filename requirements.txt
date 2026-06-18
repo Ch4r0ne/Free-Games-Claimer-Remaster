@@ -15,7 +15,7 @@ tenacity>=9.0
 APScheduler>=3.11
 
 # OTP / 2FA
-pyotp>=2.9
+pyotp>=2.10.0
 
 # Configuration
 python-dotenv>=1.1
