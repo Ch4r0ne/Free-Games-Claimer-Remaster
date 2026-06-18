@@ -705,31 +705,6 @@ class EpicGamesClaimer(BaseClaimer):
             # ── Step 1: Click the initial button ("Get" or "Add to library") ──
             initial_btn = "add to library" if flow_type == "new_add" else "get"
             clicked = await self._cdp_click_element_by_text(initial_btn, timeout=5)
-            if flow_type == "new_get":
-                if clicked:
-                    await self.sleep(1)
-                get_still_visible = await self.page.evaluate(
-                    """
-                    (() => {
-                        const btns = [...document.querySelectorAll('button')];
-                        const btn = btns.find(b => {
-                            const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-                            const r = b.getBoundingClientRect();
-                            return t === 'get' && !b.disabled && r.width > 0 && r.height > 0;
-                        });
-                        if (!btn) return false;
-                        btn.scrollIntoView({ block: 'center', behavior: 'instant' });
-                        btn.focus();
-                        for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
-                            btn.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-                        }
-                        return true;
-                    })()
-                    """
-                )
-                if get_still_visible:
-                    logger.info("'Get' button still visible after CDP click; clicked it via DOM fallback.")
-                    clicked = True
 
             if not clicked:
                 logger.warning("Could not find '%s' button for '%s'.", initial_btn, title)
@@ -945,13 +920,26 @@ class EpicGamesClaimer(BaseClaimer):
                     function findEl(doc, ox, oy) {
                         try {
                             const btns = [...doc.querySelectorAll('%s')];
-                            const btn = btns.find(b => (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase().includes('%s'));
+                            const candidates = btns.filter(b => {
+                                const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                const rect = b.getBoundingClientRect();
+                                const style = (b.ownerDocument.defaultView || window).getComputedStyle(b);
+                                return !b.disabled && rect.width > 0 && rect.height > 0
+                                    && style.visibility !== 'hidden' && style.display !== 'none'
+                                    && (t === '%s' || t.includes('%s'));
+                            });
+                            const btn = candidates.find(b => (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase() === '%s')
+                                || candidates[0];
                             if (btn) {
                                 btn.scrollIntoView({ block: 'center', behavior: 'instant' });
                                 const rect = btn.getBoundingClientRect();
-                                return { 
-                                    x: ox + rect.x + rect.width / 2, 
-                                    y: oy + rect.y + rect.height / 2,
+                                const x = rect.x + rect.width / 2;
+                                const y = rect.y + rect.height / 2;
+                                const top = doc.elementFromPoint(x, y);
+                                if (top && !btn.contains(top) && top !== btn) return null;
+                                return {
+                                    x: ox + x,
+                                    y: oy + y,
                                     w: rect.width, h: rect.height
                                 };
                             }
@@ -971,7 +959,7 @@ class EpicGamesClaimer(BaseClaimer):
                     }
                     return findEl(document, 0, 0);
                 })())
-                """ % (tag, text)
+                """ % (tag, text, text, text)
             )
 
             try:
