@@ -711,6 +711,45 @@ class EpicGamesClaimer(BaseClaimer):
                 return False
 
             logger.info("Clicked '%s' button for '%s'.", initial_btn, title)
+            if flow_type == "new_get":
+                post_get_state = ""
+                for _ in range(5):
+                    post_get_state = await self.page.evaluate(
+                        """
+                        (() => {
+                            const body = (document.body?.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+                            if (body.includes('thank you') || body.includes("it's all yours")
+                                || body.includes('successfully')
+                                || (body.includes('in library') && !body.includes('add it to your library'))) return 'success';
+                            if (document.querySelector('#webPurchaseContainer iframe')) return 'purchase iframe';
+
+                            const btns = [...document.querySelectorAll('button')];
+                            for (const btn of btns) {
+                                const t = (btn.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                const r = btn.getBoundingClientRect();
+                                if (btn.disabled || r.width <= 0 || r.height <= 0) continue;
+                                if (t.includes('add to library')) return 'add to library';
+                                if (t.includes('place order')) return 'place order';
+                                if (t.includes('continue')) return 'continue';
+                                if (t === 'get') return 'get';
+                            }
+                            return '';
+                        })()
+                        """
+                    )
+                    if post_get_state and post_get_state != "get":
+                        break
+                    await self.sleep(1)
+
+                if post_get_state == "get":
+                    logger.warning("After Get: Get still visible after click for '%s'. Taking screenshot.", title)
+                    await self.take_screenshot(f"epic_get_still_visible_{title[:20]}")
+                    return False
+                if post_get_state:
+                    logger.info("After Get: %s detected", post_get_state)
+                else:
+                    logger.info("After Get: no immediate state change detected")
+
             await self.sleep(3)
 
             # ── Step 2: Handle intermediate dialogs ──
