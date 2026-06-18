@@ -12,7 +12,7 @@ apprise>=1.9
 tenacity>=9.0
 
 # Scheduler
-APScheduler>=3.11
+APScheduler>=3.11.2
 
 # OTP / 2FA
 pyotp>=2.9
