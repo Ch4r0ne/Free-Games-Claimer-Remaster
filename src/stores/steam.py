@@ -13,6 +13,7 @@ from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
 from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.steam")
 
@@ -342,7 +343,7 @@ class SteamClaimer(BaseClaimer):
             
             # Login is complete when we reach the store domain
             # (checking "/login" not in url was fragile — CAPTCHA/challenge redirects broke the loop)
-            if "store.steampowered.com" in current_url and "/login" not in current_url:
+            if url_has_allowed_host(current_url, "store.steampowered.com") and "/login" not in current_url:
                 logger.debug("Login redirect detected, Steam Guard not needed or already passed")
                 return
             
@@ -372,7 +373,7 @@ class SteamClaimer(BaseClaimer):
                 # Wait for user to complete Steam Guard
                 for guard_wait in range(120):
                     guard_url = await self.page.evaluate("window.location.href")
-                    if "store.steampowered.com" in guard_url and "/login" not in guard_url:
+                    if url_has_allowed_host(guard_url, "store.steampowered.com") and "/login" not in guard_url:
                         logger.info("Steam Guard passed successfully!")
                         return
                     await self.sleep(1)

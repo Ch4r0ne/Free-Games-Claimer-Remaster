@@ -16,6 +16,7 @@ from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
 from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.epic")
 
@@ -211,7 +212,7 @@ class EpicGamesClaimer(BaseClaimer):
             for wait_sec in range(120):
                 # We know auth is complete when Epic redirects us back to the store domain.
                 # Checking for "login not in url" was fragile because CAPTCHAs use /id/challenge.
-                if "store.epicgames.com" in self.page.url:
+                if url_has_allowed_host(self.page.url, "store.epicgames.com"):
                     break
                     
                 if "login/review" in self.page.url:
