@@ -2,7 +2,7 @@
 nodriver>=0.50.3
 
 # Database
-sqlalchemy[asyncio]>=2.0
+sqlalchemy[asyncio]>=2.0.51
 aiosqlite>=0.22.1
 
 # Notifications
