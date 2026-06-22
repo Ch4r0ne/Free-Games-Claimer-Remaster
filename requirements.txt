@@ -1,5 +1,5 @@
 # Core browser automation
-nodriver>=0.38
+nodriver>=0.50.3
 
 # Database
 sqlalchemy[asyncio]>=2.0
