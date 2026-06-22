@@ -3,7 +3,7 @@ nodriver>=0.38
 
 # Database
 sqlalchemy[asyncio]>=2.0
-aiosqlite>=0.20
+aiosqlite>=0.22.1
 
 # Notifications
 apprise>=1.11.0
