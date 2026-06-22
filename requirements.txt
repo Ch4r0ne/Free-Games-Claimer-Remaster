@@ -24,4 +24,4 @@ python-dotenv>=1.2.2
 rich>=15.0.0
 
 # HTTP client
-httpx>=0.28
+httpx>=0.28.1
