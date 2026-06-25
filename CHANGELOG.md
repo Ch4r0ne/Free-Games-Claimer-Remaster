@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2] - 2026-06-21
+
+### Added
+- **Dependabot maintenance automation** - added weekly update checks for Python packages, GitHub Actions, and Docker images with grouped dependency PRs.
+- **Dependency Check workflow** - added CI coverage for dependency review, `pip check`, Python source compilation, `pip-audit`, and Docker image build validation.
+- **URL host validation helper** (`src/core/url_security.py`) - centralized strict HTTPS hostname checks for store redirects and login detection.
+
+### Changed
+- **Dependency updates** - bumped `apprise` to `>=1.11.0`, `tenacity` to `>=9.1.4`, `APScheduler` to `>=3.11.2`, `pyotp` to `>=2.10.0`, and `rich` to `>=15.0.0`.
+- **GitHub Actions updates** - upgraded `actions/checkout` usage to `v7` in Docker and dependency workflows.
+- **Epic checkout flow hardening** - after clicking `Get`, the claimer now verifies whether Epic moved to success, checkout iframe, add-to-library, place-order, or continue states before proceeding.
+- **Epic button targeting** - improved visible/enabled button detection and click coordinate validation to avoid hitting hidden, disabled, or covered checkout controls.
+
+### Fixed
+- **GOG VNC notification URL** - GOG 2FA prompts now use the configured `VNC_IP` and `NOVNC_PORT` instead of a hardcoded localhost link.
+- **Store login redirect checks** - Steam, Epic, GOG, and GamerPower now use parsed hostnames instead of brittle substring checks when validating trusted store URLs.
+
+### Security
+- **CodeQL URL validation alerts** - replaced unsafe URL substring host checks with strict parsed hostname validation, including controlled subdomain allowance where required.
+
 ## [1.1] – 2026-06-08
 
 ### Added
