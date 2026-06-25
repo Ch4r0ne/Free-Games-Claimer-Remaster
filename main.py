@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -105,6 +107,66 @@ _ALIASES: dict[str, str] = {
     "gamerpower":    "gamerpower",
     "gp":            "gamerpower",
 }
+
+_FIXED_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+_CLAIM_JOB_OPTIONS = {
+    "max_instances": 1,
+    "coalesce": True,
+    "misfire_grace_time": 1800,
+}
+_claim_run_lock = asyncio.Lock()
+
+
+def _parse_fixed_times(raw: str) -> list[tuple[int, int]]:
+    """Parse SCHEDULER_FIXED_TIMES as comma-separated HH:MM values."""
+    if not raw.strip():
+        return []
+
+    fixed_times: list[tuple[int, int]] = []
+    invalid: list[str] = []
+    seen: set[tuple[int, int]] = set()
+
+    for value in (part.strip() for part in raw.split(",")):
+        if not value:
+            continue
+
+        if not _FIXED_TIME_RE.fullmatch(value):
+            invalid.append(value)
+            continue
+
+        hour, minute = (int(part) for part in value.split(":", 1))
+        if hour > 23 or minute > 59:
+            invalid.append(value)
+            continue
+
+        key = (hour, minute)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        fixed_times.append(key)
+
+    if invalid:
+        logger.warning(
+            "Ignoring invalid SCHEDULER_FIXED_TIMES value(s): %s. "
+            "Use comma-separated HH:MM times, for example 07:30,17:05,21:30.",
+            ", ".join(invalid),
+        )
+
+    return fixed_times
+
+
+def _scheduler_timezone() -> ZoneInfo:
+    """Return the configured scheduler timezone or fail with a clear message."""
+    try:
+        return ZoneInfo(cfg.scheduler_timezone)
+    except ZoneInfoNotFoundError as exc:
+        logger.error(
+            "Invalid SCHEDULER_TIMEZONE '%s'. Use an IANA timezone name "
+            "such as UTC, Europe/Berlin, America/New_York, or Asia/Tokyo.",
+            cfg.scheduler_timezone,
+        )
+        raise SystemExit(2) from exc
 
 
 def _resolve_stores(raw: list[str]) -> list[str]:
@@ -252,6 +314,16 @@ async def run_claimers() -> None:
     logger.info("✔ Claiming run complete.")
 
 
+async def run_claimers_scheduled() -> None:
+    """Run claimers from scheduler jobs without overlapping executions."""
+    if _claim_run_lock.locked():
+        logger.warning("A claiming run is already in progress; skipping this scheduled trigger.")
+        return
+
+    async with _claim_run_lock:
+        await run_claimers()
+
+
 async def main() -> None:
     """Initialise DB and either run once or start the scheduler."""
     _print_banner()
@@ -283,28 +355,59 @@ async def main() -> None:
         return
 
     # Otherwise start the scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        run_claimers,
-        trigger=CronTrigger(hour=f"*/{cfg.scheduler_hours}"),  # every X hours
-        id="claim_all",
-        name="Claim free games",
-        replace_existing=True,
-    )
+    fixed_times = _parse_fixed_times(cfg.scheduler_fixed_times)
+    fixed_timezone = _scheduler_timezone() if fixed_times else None
+
+    scheduler = AsyncIOScheduler(job_defaults=_CLAIM_JOB_OPTIONS)
+    if cfg.scheduler_hours > 0:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            trigger=CronTrigger(hour=f"*/{cfg.scheduler_hours}"),  # every X hours
+            id="claim_all",
+            name="Claim free games",
+            replace_existing=True,
+        )
+    else:
+        logger.info("Interval scheduler disabled because SCHEDULER_HOURS=%s.", cfg.scheduler_hours)
+
+    for hour, minute in fixed_times:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=fixed_timezone),
+            id=f"claim_fixed_{hour:02d}_{minute:02d}",
+            name=f"Claim free games at {hour:02d}:{minute:02d}",
+            replace_existing=True,
+        )
 
     # Delay slightly to ensure TurboVNC/X11 is fully initialized BEFORE starting Chrome
     logger.info("Waiting for virtual display to initialize...")
     await asyncio.sleep(3)
 
     # Also run immediately on startup
-    scheduler.add_job(
-        run_claimers,
-        id="claim_all_startup",
-        name="Initial claiming run",
-    )
+    if cfg.run_on_startup:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            id="claim_all_startup",
+            name="Initial claiming run",
+            replace_existing=True,
+        )
+    else:
+        logger.info("Initial claiming run disabled by RUN_ON_STARTUP=false.")
 
     scheduler.start()
-    logger.info("⏱ Scheduler active – runs every %s hours.", cfg.scheduler_hours)
+    interval_text = (
+        f"runs every {cfg.scheduler_hours} hours"
+        if cfg.scheduler_hours > 0
+        else "interval disabled"
+    )
+    fixed_text = (
+        "fixed daily times: "
+        + ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in fixed_times)
+        + f" ({cfg.scheduler_timezone})"
+        if fixed_times
+        else "no fixed daily times configured"
+    )
+    logger.info("Scheduler active - %s; %s.", interval_text, fixed_text)
 
     try:
         # Keep the event loop alive
