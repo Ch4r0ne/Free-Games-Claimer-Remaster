@@ -1,0 +1,109 @@
+name: Dependency Check
+
+on:
+  pull_request:
+    paths:
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".github/dependabot.yml"
+      - ".github/workflows/dependency-check.yml"
+      - ".github/workflows/*.yml"
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".github/dependabot.yml"
+      - ".github/workflows/dependency-check.yml"
+      - ".github/workflows/*.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: dependency-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v5.0.0
+        with:
+          fail-on-severity: high
+
+  python:
+    name: Python dependency sanity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check installed package metadata
+        run: python -m pip check
+
+      - name: Compile Python sources
+        run: python -m compileall -q main.py src
+
+  audit:
+    name: Python vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install audit tooling
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Audit Python requirements
+        run: python -m pip_audit -r requirements.txt --strict
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: fgc-remaster:dependency-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true

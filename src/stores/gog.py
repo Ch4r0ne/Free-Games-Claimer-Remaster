@@ -12,6 +12,7 @@ from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
 from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.gog")
 
@@ -551,7 +552,7 @@ class GOGClaimer(BaseClaimer):
 
             # Check if redirected to login
             current_url = await self.page.evaluate("window.location.href")
-            if isinstance(current_url, str) and "login.gog.com" in current_url:
+            if isinstance(current_url, str) and url_has_allowed_host(current_url, "login.gog.com"):
                 logger.warning("Not logged in to GOG – need manual login via VNC.")
                 async def _gog_logged_in() -> bool:
                     cur = await self.page.evaluate("window.location.href")

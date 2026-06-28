@@ -22,7 +22,7 @@ Automatically claims free games on:
 - <img alt="logo indiegala" src="https://www.indiegala.com/favicon.ico" width="20" align="middle" /> **IndieGala** – free Steam keys & DRM-free games
 - <img alt="logo alienware" src="https://www.alienwarearena.com/favicon.ico" width="20" align="middle" /> **Alienware Arena** – (Notify-only) ARP point giveaways
 
-Runs as a Docker container with a built-in scheduler (every 12 hours). Login via **VNC in browser** or automated credentials.
+Runs as a Docker container with a built-in scheduler (every 12 hours by default, with optional fixed daily run times). Login via **VNC in browser** or automated credentials.
 
 ---
 
@@ -102,6 +102,9 @@ Options are set via environment variables in `.env`:
 | `NOVNC_PORT` | `7080` | noVNC web access port. |
 | `VNC_IP` | `localhost`| Custom IP/Hostname for VNC notification links. |
 | `SCHEDULER_HOURS`| `12` | Hours interval for the built-in scheduler runs. |
+| `SCHEDULER_TIMEZONE` | `UTC` | IANA timezone used for fixed daily scheduler times. |
+| `SCHEDULER_FIXED_TIMES` | | Optional comma-separated daily run times in 24-hour `HH:MM` format. Example: `17:00,21:30`. |
+| `RUN_ON_STARTUP` | `true` | Run once immediately when the container/application starts. |
 | `VNC_LOGIN_TIMEOUT`| `180` | Seconds to wait for you to log in via VNC manually. |
 | `EG_EMAIL` | | Epic Games login email. |
 | `EG_PASSWORD` | | Epic Games login password. |
@@ -142,6 +145,32 @@ Options are set via environment variables in `.env`:
 | `NOTIFY_ERRORS` | `1` | Set to 0 to disable fatal error alerts. |
 | `NOTIFY_CLAIM_FAILS`| `1` | Set to 0 to disable alerts for unclaimable games. |
 | `NOTIFY_LOGIN_REQUEST`| `1` | Set to 0 to disable VNC login request pings. |
+
+### Scheduler
+
+The application can run on an interval and optionally at fixed daily times.
+
+```ini
+SCHEDULER_HOURS=12
+SCHEDULER_TIMEZONE=UTC
+SCHEDULER_FIXED_TIMES=17:00,21:30
+RUN_ON_STARTUP=true
+```
+
+`SCHEDULER_HOURS` runs the claim process every configured number of hours.
+
+`SCHEDULER_FIXED_TIMES` adds optional daily runs at specific 24-hour `HH:MM` times. Multiple times can be separated by commas. This is useful for running shortly after known free-game release windows.
+
+`SCHEDULER_TIMEZONE` controls the timezone used for fixed daily times. Use an IANA timezone name. Examples: `Europe/Berlin`, `America/New_York`, `Asia/Tokyo`. See the IANA Time Zone Database or Python `zoneinfo` documentation for valid names. Local wall-clock schedules follow the configured timezone, including DST transitions.
+
+Example for Germany:
+
+```ini
+SCHEDULER_TIMEZONE=Europe/Berlin
+SCHEDULER_FIXED_TIMES=17:00
+```
+
+This runs once per day at 17:00 Berlin time. If `SCHEDULER_HOURS` is also configured, interval runs continue as well.
 
 ### Selective module execution
 

@@ -58,6 +58,9 @@ class Config:
     novnc_port: str | None = os.getenv("NOVNC_PORT")
     vnc_ip: str = os.getenv("VNC_IP", "localhost")
     scheduler_hours: int = _int("SCHEDULER_HOURS", 12)
+    scheduler_timezone: str = os.getenv("SCHEDULER_TIMEZONE", "UTC").strip() or "UTC"
+    scheduler_fixed_times: str = os.getenv("SCHEDULER_FIXED_TIMES", "")
+    run_on_startup: bool = _bool("RUN_ON_STARTUP", default=True)
 
     # --- DB Reset ---
     reset_db_games: bool = _bool("RESET_DB_GAMES", default=False)

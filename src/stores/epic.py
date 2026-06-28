@@ -16,6 +16,7 @@ from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
 from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.epic")
 
@@ -211,7 +212,7 @@ class EpicGamesClaimer(BaseClaimer):
             for wait_sec in range(120):
                 # We know auth is complete when Epic redirects us back to the store domain.
                 # Checking for "login not in url" was fragile because CAPTCHAs use /id/challenge.
-                if "store.epicgames.com" in self.page.url:
+                if url_has_allowed_host(self.page.url, "store.epicgames.com"):
                     break
                     
                 if "login/review" in self.page.url:
@@ -711,6 +712,45 @@ class EpicGamesClaimer(BaseClaimer):
                 return False
 
             logger.info("Clicked '%s' button for '%s'.", initial_btn, title)
+            if flow_type == "new_get":
+                post_get_state = ""
+                for _ in range(5):
+                    post_get_state = await self.page.evaluate(
+                        """
+                        (() => {
+                            const body = (document.body?.innerText || '').replace(/\\s+/g, ' ').toLowerCase();
+                            if (body.includes('thank you') || body.includes("it's all yours")
+                                || body.includes('successfully')
+                                || (body.includes('in library') && !body.includes('add it to your library'))) return 'success';
+                            if (document.querySelector('#webPurchaseContainer iframe')) return 'purchase iframe';
+
+                            const btns = [...document.querySelectorAll('button')];
+                            for (const btn of btns) {
+                                const t = (btn.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                const r = btn.getBoundingClientRect();
+                                if (btn.disabled || r.width <= 0 || r.height <= 0) continue;
+                                if (t.includes('add to library')) return 'add to library';
+                                if (t.includes('place order')) return 'place order';
+                                if (t.includes('continue')) return 'continue';
+                                if (t === 'get') return 'get';
+                            }
+                            return '';
+                        })()
+                        """
+                    )
+                    if post_get_state and post_get_state != "get":
+                        break
+                    await self.sleep(1)
+
+                if post_get_state == "get":
+                    logger.warning("After Get: Get still visible after click for '%s'. Taking screenshot.", title)
+                    await self.take_screenshot(f"epic_get_still_visible_{title[:20]}")
+                    return False
+                if post_get_state:
+                    logger.info("After Get: %s detected", post_get_state)
+                else:
+                    logger.info("After Get: no immediate state change detected")
+
             await self.sleep(3)
 
             # ── Step 2: Handle intermediate dialogs ──
@@ -920,13 +960,31 @@ class EpicGamesClaimer(BaseClaimer):
                     function findEl(doc, ox, oy) {
                         try {
                             const btns = [...doc.querySelectorAll('%s')];
-                            const btn = btns.find(b => (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase().includes('%s'));
+                            const candidates = btns.filter(b => {
+                                const t = (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                                const rect = b.getBoundingClientRect();
+                                const style = (b.ownerDocument.defaultView || window).getComputedStyle(b);
+                                return !b.disabled && rect.width > 0 && rect.height > 0
+                                    && style.visibility !== 'hidden' && style.display !== 'none'
+                                    && (t === '%s' || t.includes('%s'));
+                            });
+                            const btn = candidates.find(b => (b.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase() === '%s')
+                                || candidates[0];
                             if (btn) {
                                 btn.scrollIntoView({ block: 'center', behavior: 'instant' });
                                 const rect = btn.getBoundingClientRect();
-                                return { 
-                                    x: ox + rect.x + rect.width / 2, 
-                                    y: oy + rect.y + rect.height / 2,
+                                const left = Math.max(rect.left, 1);
+                                const right = Math.min(rect.right, window.innerWidth - 1);
+                                const topEdge = Math.max(rect.top, 1);
+                                const bottom = Math.min(rect.bottom, window.innerHeight - 1);
+                                if (right <= left || bottom <= topEdge) return null;
+                                const x = left + (right - left) / 2;
+                                const y = topEdge + (bottom - topEdge) / 2;
+                                const top = doc.elementFromPoint(x, y);
+                                if (!top || (!btn.contains(top) && top !== btn)) return null;
+                                return {
+                                    x: ox + x,
+                                    y: oy + y,
                                     w: rect.width, h: rect.height
                                 };
                             }
@@ -946,7 +1004,7 @@ class EpicGamesClaimer(BaseClaimer):
                     }
                     return findEl(document, 0, 0);
                 })())
-                """ % (tag, text)
+                """ % (tag, text, text, text)
             )
 
             try:
