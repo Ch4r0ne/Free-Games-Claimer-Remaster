@@ -254,8 +254,41 @@ class PrimeGamingClaimer(BaseClaimer):
 
     async def _do_login(self) -> None:
         """Fill in email + password on the Amazon login page."""
+        import json
         email = cfg.pg_email
         password = cfg.pg_password
+        
+        # --- Handle "Switch accounts" / Saved Profile Screen ---
+        # Amazon often skips the email input if the browser session remembers
+        # the user's previous login, presenting a "Switch accounts" selection.
+        await self.page.evaluate('''
+            (() => {
+                const targetEmail = %s;
+                const bodyText = (document.body.innerText || '').toLowerCase();
+                if (bodyText.includes('switch accounts') || bodyText.includes('add account')) {
+                    const els = [...document.querySelectorAll('div, span, a, button')];
+                    // 1. Try to click the existing profile block matching our target email
+                    for (const el of els) {
+                        const t = (el.innerText || '').toLowerCase().trim();
+                        if (t === targetEmail.toLowerCase()) {
+                            const clickable = el.closest('a, button, [role="button"], [role="link"], .cvf-account-switcher-profile') || el;
+                            clickable.click();
+                            return;
+                        }
+                    }
+                    // 2. If the desired profile isn't listed, click "Add account" to revert to normal email input
+                    for (const el of els) {
+                        const t = (el.innerText || '').toLowerCase().trim();
+                        if (t === 'add account' || t === 'use another account') {
+                            const clickable = el.closest('a, button, [role="button"], [role="link"]') || el;
+                            clickable.click();
+                            return;
+                        }
+                    }
+                }
+            })()
+        ''' % json.dumps(email))
+        await self.sleep(2)
 
         # Email field
         email_input = await self.page.find("#ap_email", timeout=10)
@@ -277,10 +310,25 @@ class PrimeGamingClaimer(BaseClaimer):
             await password_input.apply('(el) => { let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; if(setter) setter.call(el, ""); el.dispatchEvent(new Event("input", {bubbles: true})); }')
             await password_input.send_keys(password)
 
-        submit_btn = await self.page.find("#signInSubmit", timeout=5)
-        if submit_btn:
-            await submit_btn.click()
-            await self.sleep(4)
+        # Submit button (explicitly filtering out "Sign in with a passkey" to avoid loops)
+        await self.page.evaluate('''
+            (() => {
+                const btns = [...document.querySelectorAll('input[type="submit"], button, .a-button-input')];
+                for (const b of btns) {
+                    const text = (b.value || b.innerText || b.textContent || '').toLowerCase();
+                    if (text.includes('passkey')) continue;
+                    
+                    if (b.id === 'signInSubmit' || b.id === 'continue' || text === 'sign in') {
+                        const rect = b.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0 && !b.disabled) {
+                            b.click();
+                            return;
+                        }
+                    }
+                }
+            })()
+        ''')
+        await self.sleep(4)
 
         # Handle MFA (TOTP authenticator app)
         if cfg.pg_otpkey:

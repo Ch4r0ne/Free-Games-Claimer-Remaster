@@ -3,7 +3,8 @@ services:
   # Free Games Claimer Remaster
   # ---------------------------------------------------------------
   app:
-    image: ghcr.io/p-adamiec/free-games-claimer-remaster:latest
+    # To run the experimental development build, set FGC_TAG=dev in your .env file!
+    image: ghcr.io/p-adamiec/free-games-claimer-remaster:${FGC_TAG:-latest}
     container_name: fgc-remaster
     build: .
     restart: unless-stopped

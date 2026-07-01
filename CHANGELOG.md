@@ -3,9 +3,10 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.2] - 2026-06-21
+## [1.2] - 2026-07-01
 
 ### Added
+- **Dynamic Docker Image Tagging (`FGC_TAG`)** – added support for specifying `${FGC_TAG:-latest}` in `docker-compose.yml`, allowing users to effortlessly switch between stable (`latest`) and experimental (`dev`) builds via their `.env` file without modifying Compose configurations.
 - **Dependabot maintenance automation** - added weekly update checks for Python packages, GitHub Actions, and Docker images with grouped dependency PRs.
 - **Dependency Check workflow** - added CI coverage for dependency review, `pip check`, Python source compilation, `pip-audit`, and Docker image build validation.
 - **URL host validation helper** (`src/core/url_security.py`) - centralized strict HTTPS hostname checks for store redirects and login detection.
@@ -20,6 +21,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **Scheduler backward compatibility** - kept existing `SCHEDULER_HOURS` interval scheduling unchanged.
 
 ### Fixed
+- **Amazon Prime Gaming / Luna sign-in and passkey loops** – replaced the patched WebAuthn API call block with direct DOM button evaluation that selects the Sign-In button while explicitly filtering out "Sign in with a passkey" elements to prevent automation loops. Also added automatic handling for Amazon's "Switch accounts" screen to select the profile matching `PG_EMAIL` or click "Add account" if missing.
 - **GOG VNC notification URL** - GOG 2FA prompts now use the configured `VNC_IP` and `NOVNC_PORT` instead of a hardcoded localhost link.
 - **Store login redirect checks** - Steam, Epic, GOG, and GamerPower now use parsed hostnames instead of brittle substring checks when validating trusted store URLs.
 
