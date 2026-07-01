@@ -32,7 +32,7 @@ from src.stores.gog import claim_gog
 from src.stores.prime import claim_prime
 from src.stores.steam import claim_steam
 from src.core.notifier import notify
-from src.version import __version__, __author__, __repo__
+from src.version import __version__, __author__, __repo__, __contributors__
 
 # ---------------------------------------------------------------------------
 # Logging – user-friendly by default, verbose only on errors
@@ -216,6 +216,12 @@ def _print_banner() -> None:
         f"  by {__author__}",
         f"  {__repo__}",
     ]
+    if __contributors__:
+        contrib_str = ", ".join(__contributors__)
+        lines.extend([
+            "",
+            f"  Special thanks to project contributors: {contrib_str}",
+        ])
     print(f"\n╔{'═' * W}╗")
     for line in lines:
         print(f"║{line.ljust(W)}║")
