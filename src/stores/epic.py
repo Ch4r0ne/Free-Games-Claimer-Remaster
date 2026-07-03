@@ -86,7 +86,7 @@ class EpicGamesClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error")
             if cfg.notify_errors:
-                await notify(f"epic-games failed: {exc}")
+                await notify(f"ERROR: Epic Games claimer failed - {exc}")
         finally:
             # We DO NOT notify individually here anymore - we just return it to the orchestrator
             # (Exception: We still keep error notifications inside logic if needed, but summary is deferred)
@@ -683,7 +683,7 @@ class EpicGamesClaimer(BaseClaimer):
                 notify_game["status"] = "failed"
                 await self.take_screenshot(f"epic_failed_{game_id}")
                 if cfg.notify_claim_fails:
-                    await notify(f"epic-games: failed to claim {title}")
+                    await notify(f"ERROR: Epic Games failed to claim {title}")
 
             await session.commit()
 

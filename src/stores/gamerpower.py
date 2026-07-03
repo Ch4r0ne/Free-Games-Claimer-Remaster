@@ -105,7 +105,7 @@ class GamerPowerClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error in GamerPower")
             if cfg.notify_errors:
-                await notify(f"gamerpower failed: {exc}")
+                await notify(f"ERROR: GamerPower claimer failed - {exc}")
         finally:
             # Summary notifications deferred to main.py
             await self.close_browser()

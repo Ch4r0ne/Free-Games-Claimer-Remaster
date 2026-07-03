@@ -114,5 +114,8 @@ def format_game_list(games: list[dict]) -> str:
         url = g.get("url", "")
         title = g.get("title", "Unknown")
         status = g.get("status", "?")
-        lines.append(f"• **[{title}]({url})** — {status}")
+        if url:
+            lines.append(f"- **[{title}]({url})** - {status}")
+        else:
+            lines.append(f"- **{title}** - {status}")
     return "\n".join(lines)

@@ -11,6 +11,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **URL host validation helper** (`src/core/url_security.py`) - centralized strict HTTPS hostname checks for store redirects and login detection.
 - **Daily time-based scheduler** - added optional daily run times via `SCHEDULER_FIXED_TIMES` (for example `17:00,21:30`) in addition to the existing interval scheduler.
 - **Scheduler timezone support** - added `SCHEDULER_TIMEZONE` for daily time-based runs.
+- **Store-specific scheduler windows** - added optional `SCHEDULER_STORE_WINDOWS` to restrict scheduled runs per store.
 
 ### Changed
 - **Dependency updates** - bumped `apprise` to `>=1.11.0`, `tenacity` to `>=9.1.4`, `APScheduler` to `>=3.11.2`, `pyotp` to `>=2.10.0`, and `rich` to `>=15.0.0`.
@@ -18,6 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **Epic checkout flow hardening** - after clicking `Get`, the claimer now verifies whether Epic moved to success, checkout iframe, add-to-library, place-order, or continue states before proceeding.
 - **Epic button targeting** - improved visible/enabled button detection and click coordinate validation to avoid hitting hidden, disabled, or covered checkout controls.
 - **Scheduler backward compatibility** - kept existing `SCHEDULER_HOURS` interval scheduling unchanged.
+- **Notification headlines** - Discord and Apprise messages now start with clearer `SUCCESSFULLY CLAIMED`, `ERROR`, or `ACTION REQUIRED` text for mobile push notifications.
 
 ### Fixed
 - **GOG VNC notification URL** - GOG 2FA prompts now use the configured `VNC_IP` and `NOVNC_PORT` instead of a hardcoded localhost link.

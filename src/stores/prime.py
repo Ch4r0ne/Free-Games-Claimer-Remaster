@@ -74,7 +74,7 @@ class PrimeGamingClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error")
             if cfg.notify_errors:
-                await notify(f"prime-gaming failed: {exc}")
+                await notify(f"ERROR: Prime Gaming claimer failed - {exc}")
         finally:
             # Export claimed games with codes to a JSON file for user convenience
             try:

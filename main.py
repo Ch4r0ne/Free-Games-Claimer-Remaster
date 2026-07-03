@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -115,6 +116,20 @@ _CLAIM_JOB_OPTIONS = {
     "misfire_grace_time": 1800,
 }
 _claim_run_lock = asyncio.Lock()
+_store_schedule_windows: dict[str, list[tuple[time, time]]] = {}
+_active_scheduler_timezone: ZoneInfo | None = None
+
+
+def _parse_hh_mm(value: str) -> tuple[int, int] | None:
+    """Parse a 24-hour HH:MM value."""
+    if not _FIXED_TIME_RE.fullmatch(value):
+        return None
+
+    hour, minute = (int(part) for part in value.split(":", 1))
+    if hour > 23 or minute > 59:
+        return None
+
+    return hour, minute
 
 
 def _parse_fixed_times(raw: str) -> list[tuple[int, int]]:
@@ -130,15 +145,12 @@ def _parse_fixed_times(raw: str) -> list[tuple[int, int]]:
         if not value:
             continue
 
-        if not _FIXED_TIME_RE.fullmatch(value):
+        parsed = _parse_hh_mm(value)
+        if parsed is None:
             invalid.append(value)
             continue
 
-        hour, minute = (int(part) for part in value.split(":", 1))
-        if hour > 23 or minute > 59:
-            invalid.append(value)
-            continue
-
+        hour, minute = parsed
         key = (hour, minute)
         if key in seen:
             continue
@@ -156,6 +168,57 @@ def _parse_fixed_times(raw: str) -> list[tuple[int, int]]:
     return fixed_times
 
 
+def _parse_store_schedule_windows(raw: str) -> dict[str, list[tuple[time, time]]]:
+    """Parse SCHEDULER_STORE_WINDOWS as store=HH:MM-HH:MM entries."""
+    if not raw.strip():
+        return {}
+
+    windows: dict[str, list[tuple[time, time]]] = {}
+    invalid: list[str] = []
+
+    for item in (part.strip() for part in raw.split(";")):
+        if not item:
+            continue
+
+        if "=" not in item:
+            invalid.append(item)
+            continue
+
+        store_name, raw_windows = (part.strip() for part in item.split("=", 1))
+        store_key = _ALIASES.get(store_name.lower())
+        if store_key is None:
+            invalid.append(item)
+            continue
+
+        parsed_windows: list[tuple[time, time]] = []
+        for raw_window in (part.strip() for part in raw_windows.split(",")):
+            if not raw_window or "-" not in raw_window:
+                invalid.append(f"{store_name}={raw_window}")
+                continue
+
+            start_raw, end_raw = (part.strip() for part in raw_window.split("-", 1))
+            start = _parse_hh_mm(start_raw)
+            end = _parse_hh_mm(end_raw)
+            if start is None or end is None:
+                invalid.append(f"{store_name}={raw_window}")
+                continue
+
+            parsed_windows.append((time(*start), time(*end)))
+
+        if parsed_windows:
+            windows.setdefault(store_key, []).extend(parsed_windows)
+
+    if invalid:
+        logger.warning(
+            "Ignoring invalid SCHEDULER_STORE_WINDOWS value(s): %s. "
+            "Use store=HH:MM-HH:MM entries separated by semicolons, "
+            "for example epic=17:00-19:00;steam=18:00-23:00.",
+            ", ".join(invalid),
+        )
+
+    return windows
+
+
 def _scheduler_timezone() -> ZoneInfo:
     """Return the configured scheduler timezone or fail with a clear message."""
     try:
@@ -167,6 +230,41 @@ def _scheduler_timezone() -> ZoneInfo:
             cfg.scheduler_timezone,
         )
         raise SystemExit(2) from exc
+
+
+def _time_in_window(current: time, start: time, end: time) -> bool:
+    """Return whether current is inside a same-day or overnight time window."""
+    if start <= end:
+        return start <= current <= end
+    return current >= start or current <= end
+
+
+def _filter_stores_by_schedule_windows(selected: list[str]) -> list[str]:
+    """Filter selected stores by configured scheduler windows."""
+    if not _store_schedule_windows:
+        return selected
+
+    timezone = _active_scheduler_timezone or _scheduler_timezone()
+    current = datetime.now(timezone).time()
+    filtered: list[str] = []
+    skipped: list[str] = []
+
+    for store_key in selected:
+        windows = _store_schedule_windows.get(store_key)
+        if not windows or any(_time_in_window(current, start, end) for start, end in windows):
+            filtered.append(store_key)
+        else:
+            skipped.append(store_key)
+
+    if skipped:
+        logger.info(
+            "Skipping store(s) outside scheduler window at %s %s: %s",
+            current.strftime("%H:%M"),
+            cfg.scheduler_timezone,
+            ", ".join(skipped),
+        )
+
+    return filtered
 
 
 def _resolve_stores(raw: list[str]) -> list[str]:
@@ -183,7 +281,7 @@ def _resolve_stores(raw: list[str]) -> list[str]:
     return resolved
 
 
-def _get_active_claimers() -> list[tuple[str, object]]:
+def _get_active_claimers(*, respect_store_windows: bool = False) -> list[tuple[str, object]]:
     """Determine which claimers to run based on CLI args / STORES env var.
 
     Priority:
@@ -200,6 +298,9 @@ def _get_active_claimers() -> list[tuple[str, object]]:
         selected = _resolve_stores([s for s in cfg.stores.split(",") if s.strip()])
     else:
         selected = ["steam", "epic", "prime", "gog"]
+
+    if respect_store_windows:
+        selected = _filter_stores_by_schedule_windows(selected)
 
     return [(ALL_CLAIMERS[k][0], ALL_CLAIMERS[k][1]) for k in selected if k in ALL_CLAIMERS]
 
@@ -226,12 +327,15 @@ def _print_banner() -> None:
 # Orchestration
 # ---------------------------------------------------------------------------
 
-async def run_claimers() -> None:
+async def run_claimers(*, respect_store_windows: bool = False) -> None:
     """Run selected claimers sequentially (they each open their own browser)."""
-    claimers = _get_active_claimers()
+    claimers = _get_active_claimers(respect_store_windows=respect_store_windows)
 
     if not claimers:
-        logger.warning("No valid stores selected. Nothing to do.")
+        if respect_store_windows:
+            logger.info("No stores selected for the current scheduler window. Nothing to do.")
+        else:
+            logger.warning("No valid stores selected. Nothing to do.")
         return
 
     store_names = [name for name, _ in claimers]
@@ -246,7 +350,7 @@ async def run_claimers() -> None:
                 aggregated_results.append(res)
         except Exception:
             logger.exception("✗ %s crashed", name)
-            await notify(f"{name} claimer crashed with an unhandled exception. Check logs.")
+            await notify(f"ERROR: {name} claimer crashed with an unhandled exception. Check logs.")
 
     # After standard claimers finish, check for pending GOG codes from Prime Gaming.
     # Only run if there are actually codes with status="claimed" waiting,
@@ -291,6 +395,7 @@ async def run_claimers() -> None:
     if cfg.notify_summary and aggregated_results:
         from src.core.notifier import format_game_list
         msg_parts = []
+        relevant_headlines = []
         for result in aggregated_results:
             # Filter out games that were "existed" or "already redeemed"
             relevant_games = [
@@ -303,12 +408,23 @@ async def run_claimers() -> None:
             
             if not relevant_games:
                 continue
+
+            for game in relevant_games:
+                relevant_headlines.append({
+                    "store": result["store"],
+                    "title": game.get("title", "Unknown"),
+                })
                 
             header = f"**{result['store']}** ({result['user']}):" if result.get('user') else f"**{result['store']}**:"
             msg_parts.append(f"{header}\n{format_game_list(relevant_games)}")
             
         if msg_parts:
-            final_msg = "\n\n".join(msg_parts)
+            first = relevant_headlines[0]
+            if len(relevant_headlines) == 1:
+                headline = f"SUCCESSFULLY CLAIMED: {first['title']} ({first['store']})"
+            else:
+                headline = f"SUCCESSFULLY CLAIMED: {first['title']} ({first['store']}) + {len(relevant_headlines) - 1} more"
+            final_msg = f"{headline}\n\n" + "\n\n".join(msg_parts)
             await notify(final_msg)
 
     logger.info("✔ Claiming run complete.")
@@ -321,7 +437,7 @@ async def run_claimers_scheduled() -> None:
         return
 
     async with _claim_run_lock:
-        await run_claimers()
+        await run_claimers(respect_store_windows=True)
 
 
 async def main() -> None:
@@ -355,8 +471,11 @@ async def main() -> None:
         return
 
     # Otherwise start the scheduler
+    global _active_scheduler_timezone, _store_schedule_windows
     fixed_times = _parse_fixed_times(cfg.scheduler_fixed_times)
-    fixed_timezone = _scheduler_timezone() if fixed_times else None
+    _store_schedule_windows = _parse_store_schedule_windows(cfg.scheduler_store_windows)
+    _active_scheduler_timezone = _scheduler_timezone() if fixed_times or _store_schedule_windows else None
+    fixed_timezone = _active_scheduler_timezone if fixed_times else None
 
     scheduler = AsyncIOScheduler(job_defaults=_CLAIM_JOB_OPTIONS)
     if cfg.scheduler_hours > 0:

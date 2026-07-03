@@ -72,7 +72,7 @@ class SteamClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error")
             if cfg.notify_errors:
-                await notify(f"steam failed: {exc}")
+                await notify(f"ERROR: Steam claimer failed - {exc}")
         finally:
             # Send notification with newly claimed games
             has_new = [g for g in self.notify_games if g["status"] == "claimed"]
@@ -368,7 +368,7 @@ class SteamClaimer(BaseClaimer):
             if has_guard:
                 logger.warning("⚠ Steam Guard detected! Please enter the code via VNC or approve on your phone. (Waiting up to 2 min)")
                 if cfg.notify_errors:
-                    await notify("Steam Guard code required! Open VNC and enter the code, or approve on your mobile app.")
+                    await notify("ACTION REQUIRED: Steam Guard code required. Open VNC and enter the code, or approve on your mobile app.")
                 
                 # Wait for user to complete Steam Guard
                 for guard_wait in range(120):

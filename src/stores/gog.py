@@ -45,7 +45,7 @@ class GOGClaimer(BaseClaimer):
             logger.exception("Fatal error")
             # Send a notification about the crash if notifications are enabled
             if cfg.notify_errors:
-                await notify(f"gog failed: {exc}")
+                await notify(f"ERROR: GOG claimer failed - {exc}")
         finally:
             # Always close the browser, even if there was an error
             await self.close_browser()
@@ -532,7 +532,12 @@ class GOGClaimer(BaseClaimer):
             claimed = [g for g in self.notify_games if g["status"] != "existed"]
             if claimed and cfg.notify_summary:
                 from src.core.notifier import format_game_list, notify
-                msg = f"**GOG Auto-Redeemer**:\n{format_game_list(self.notify_games)}"
+                first_title = claimed[0].get("title", "Unknown")
+                if len(claimed) == 1:
+                    headline = f"SUCCESSFULLY CLAIMED: {first_title} (GOG Auto-Redeemer)"
+                else:
+                    headline = f"SUCCESSFULLY CLAIMED: {first_title} (GOG Auto-Redeemer) + {len(claimed) - 1} more"
+                msg = f"{headline}\n\n**GOG Auto-Redeemer**:\n{format_game_list(self.notify_games)}"
                 await notify(msg)
         except Exception:
             logger.exception("Fatal error during pending codes redemption")

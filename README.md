@@ -102,8 +102,9 @@ Options are set via environment variables in `.env`:
 | `NOVNC_PORT` | `7080` | noVNC web access port. |
 | `VNC_IP` | `localhost`| Custom IP/Hostname for VNC notification links. |
 | `SCHEDULER_HOURS`| `12` | Hours interval for the built-in scheduler runs. |
-| `SCHEDULER_TIMEZONE` | `UTC` | IANA timezone used for fixed daily scheduler times. |
+| `SCHEDULER_TIMEZONE` | `UTC` | IANA timezone used for fixed daily scheduler times and store windows. |
 | `SCHEDULER_FIXED_TIMES` | | Optional comma-separated daily run times in 24-hour `HH:MM` format. Example: `17:00,21:30`. |
+| `SCHEDULER_STORE_WINDOWS` | | Optional store-specific run windows for scheduled runs. Example: `epic=17:00-19:00;steam=18:00-23:00`. |
 | `RUN_ON_STARTUP` | `true` | Run once immediately when the container/application starts. |
 | `VNC_LOGIN_TIMEOUT`| `180` | Seconds to wait for you to log in via VNC manually. |
 | `EG_EMAIL` | | Epic Games login email. |
@@ -154,6 +155,7 @@ The application can run on an interval and optionally at fixed daily times.
 SCHEDULER_HOURS=12
 SCHEDULER_TIMEZONE=UTC
 SCHEDULER_FIXED_TIMES=17:00,21:30
+SCHEDULER_STORE_WINDOWS=epic=17:00-19:00;steam=18:00-23:00
 RUN_ON_STARTUP=true
 ```
 
@@ -161,7 +163,9 @@ RUN_ON_STARTUP=true
 
 `SCHEDULER_FIXED_TIMES` adds optional daily runs at specific 24-hour `HH:MM` times. Multiple times can be separated by commas. This is useful for running shortly after known free-game release windows.
 
-`SCHEDULER_TIMEZONE` controls the timezone used for fixed daily times. Use an IANA timezone name. Examples: `Europe/Berlin`, `America/New_York`, `Asia/Tokyo`. See the IANA Time Zone Database or Python `zoneinfo` documentation for valid names. Local wall-clock schedules follow the configured timezone, including DST transitions.
+`SCHEDULER_STORE_WINDOWS` optionally limits individual stores during scheduled runs. Stores without a configured window are not restricted. Manual `--once` runs ignore these windows.
+
+`SCHEDULER_TIMEZONE` controls the timezone used for fixed daily times and store windows. Use an IANA timezone name. Examples: `Europe/Berlin`, `America/New_York`, `Asia/Tokyo`. See the IANA Time Zone Database or Python `zoneinfo` documentation for valid names. Local wall-clock schedules follow the configured timezone, including DST transitions.
 
 Example for Germany:
 
@@ -217,7 +221,7 @@ free-games-claimer-remaster/
 
 ### How it works
 
-1. **Scheduler** (`main.py`) runs every 12 hours
+1. **Scheduler** (`main.py`) runs on the configured interval and optional fixed daily times
 2. Each store module **starts its own browser** with an isolated profile, securely recalling session cookies (`--restore-last-session`).
 3. **Login detection** checks the page DOM (not just cookies/DB).
 4. **Stealth profiles** are injected via `nodriver` directly via Official Chrome binaries before any page loads.
@@ -229,7 +233,7 @@ free-games-claimer-remaster/
 
 ## Notifications
 
-Set `DISCORD_WEBHOOK` in `.env` for Discord notifications about claimed games and errors. Use the respective `NOTIFY_...=0` flags to silence notification subsets if they generate too much noise.
+Set `DISCORD_WEBHOOK` in `.env` for Discord notifications about claimed games and errors. Messages start with clear `SUCCESSFULLY CLAIMED`, `ERROR`, or `ACTION REQUIRED` headlines so mobile push notifications are easier to read. Use the respective `NOTIFY_...=0` flags to silence notification subsets if they generate too much noise.
 
 For other services, [apprise](https://github.com/caronc/apprise) natively supports sending to Telegram, Slack, Matrix and more – just set the `NOTIFY` variable!
 
