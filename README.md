@@ -69,11 +69,13 @@ DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
 # STORES=steam,prime,gog
 ```
 
-### 2. Build and run
+### 2. Run container
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+> 💡 **Want to test experimental development features?** Add `FGC_TAG=dev` to your `.env` file before running Docker to automatically download our pre-release build!
 
 ### 3. Login (first run)
 
@@ -96,6 +98,7 @@ Options are set via environment variables in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
+| `FGC_TAG` | `latest` | Docker image tag to run (set to `dev` to test experimental pre-release builds). |
 | `SHOW` | `1` | Show browser window (VNC). |
 | `WIDTH` | `1280` | Browser/VNC screen width. |
 | `HEIGHT` | `720` | Browser/VNC screen height. |
