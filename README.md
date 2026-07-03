@@ -105,9 +105,9 @@ Options are set via environment variables in `.env`:
 | `NOVNC_PORT` | `7080` | noVNC web access port. |
 | `VNC_IP` | `localhost`| Custom IP/Hostname for VNC notification links. |
 | `SCHEDULER_HOURS`| `12` | Hours interval for the built-in scheduler runs. |
-| `SCHEDULER_TIMEZONE` | `UTC` | IANA timezone used for fixed daily scheduler times and store windows. |
+| `SCHEDULER_TIMEZONE` | `UTC` | IANA timezone used for fixed daily scheduler times. |
 | `SCHEDULER_FIXED_TIMES` | | Optional comma-separated daily run times in 24-hour `HH:MM` format. Example: `17:00,21:30`. |
-| `SCHEDULER_STORE_WINDOWS` | | Optional store-specific run windows for scheduled runs. Example: `epic=17:00-19:00;steam=18:00-23:00`. |
+| `SCHEDULER_STORE_TIMES` | | Optional store-specific fixed daily run times. Example: `epic=17:10,22:30;steam=19:10,22:30;gog=10:10,14:10,17:10,21:10`. |
 | `RUN_ON_STARTUP` | `true` | Run once immediately when the container/application starts. |
 | `VNC_LOGIN_TIMEOUT`| `180` | Seconds to wait for you to log in via VNC manually. |
 | `EG_EMAIL` | | Epic Games login email. |
@@ -158,7 +158,7 @@ The application can run on an interval and optionally at fixed daily times.
 SCHEDULER_HOURS=12
 SCHEDULER_TIMEZONE=UTC
 SCHEDULER_FIXED_TIMES=17:00,21:30
-SCHEDULER_STORE_WINDOWS=epic=17:00-19:00;steam=18:00-23:00
+SCHEDULER_STORE_TIMES=epic=17:10,22:30;steam=19:10,22:30;gog=10:10,14:10,17:10,21:10
 RUN_ON_STARTUP=true
 ```
 
@@ -166,9 +166,9 @@ RUN_ON_STARTUP=true
 
 `SCHEDULER_FIXED_TIMES` adds optional daily runs at specific 24-hour `HH:MM` times. Multiple times can be separated by commas. This is useful for running shortly after known free-game release windows.
 
-`SCHEDULER_STORE_WINDOWS` optionally limits individual stores during scheduled runs. Stores without a configured window are not restricted. Manual `--once` runs ignore these windows.
+`SCHEDULER_STORE_TIMES` adds optional daily runs for individual stores. This is useful when each store has different release windows. Multiple times per store can be separated by commas. Store names use the same aliases as `STORES`.
 
-`SCHEDULER_TIMEZONE` controls the timezone used for fixed daily times and store windows. Use an IANA timezone name. Examples: `Europe/Berlin`, `America/New_York`, `Asia/Tokyo`. See the IANA Time Zone Database or Python `zoneinfo` documentation for valid names. Local wall-clock schedules follow the configured timezone, including DST transitions.
+`SCHEDULER_TIMEZONE` controls the timezone used for fixed daily times. Use an IANA timezone name. Examples: `Europe/Berlin`, `America/New_York`, `Asia/Tokyo`. See the IANA Time Zone Database or Python `zoneinfo` documentation for valid names. Local wall-clock schedules follow the configured timezone, including DST transitions.
 
 Example for Germany:
 

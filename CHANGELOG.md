@@ -12,7 +12,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **URL host validation helper** (`src/core/url_security.py`) - centralized strict HTTPS hostname checks for store redirects and login detection.
 - **Daily time-based scheduler** - added optional daily run times via `SCHEDULER_FIXED_TIMES` (for example `17:00,21:30`) in addition to the existing interval scheduler.
 - **Scheduler timezone support** - added `SCHEDULER_TIMEZONE` for daily time-based runs.
-- **Store-specific scheduler windows** - added optional `SCHEDULER_STORE_WINDOWS` to restrict scheduled runs per store.
+- **Store-specific daily scheduler times** - added optional `SCHEDULER_STORE_TIMES` to run individual stores at their own configured daily times.
 
 ### Changed
 - **Dependency updates** - bumped `apprise` to `>=1.11.0`, `tenacity` to `>=9.1.4`, `APScheduler` to `>=3.11.2`, `pyotp` to `>=2.10.0`, and `rich` to `>=15.0.0`.
