@@ -15,7 +15,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.notifier import notify
 from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.epic")
@@ -682,8 +682,7 @@ class EpicGamesClaimer(BaseClaimer):
                 obj.status = "failed"
                 notify_game["status"] = "failed"
                 await self.take_screenshot(f"epic_failed_{game_id}")
-                if cfg.notify_claim_fails:
-                    await notify(f"ERROR: Epic Games failed to claim {title}")
+                # The central result notification reports this failure once.
 
             await session.commit()
 

@@ -13,7 +13,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.notifier import notify
 
 logger = logging.getLogger("fgc.prime")
 
@@ -82,8 +82,7 @@ class PrimeGamingClaimer(BaseClaimer):
             except Exception as e:
                 logger.error("Failed to export legacy JSON: %s", e)
 
-            # Summary notifications
-            if self.notify_games and cfg.notify_summary:
+            if self.notify_games:
                 self.logger.info("Prime Gaming claimer finished with %d games.", len(self.notify_games))
 
             # Always close the browser when done

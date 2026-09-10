@@ -18,7 +18,7 @@ from src.core.config import cfg
 from src.core.database import async_session, ClaimedGame, get_or_create
 from src.core.url_security import url_has_allowed_host
 import logging
-from src.core.notifier import notify, format_game_list
+from src.core.notifier import notify
 from src.core.claimer import filenamify
 
 logger = logging.getLogger("fgc.gamerpower")

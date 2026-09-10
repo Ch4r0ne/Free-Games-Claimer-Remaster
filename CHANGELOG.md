@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- Game notifications now start with `Game - Claimed - Store`, without duplicate headings or account sections.
+- Removed the old list formatter and separate GOG redemption summary.
+- Removed the unused `PG_CLAIMDLC` setting and its documentation.
+
+### Added
+- `NOTIFY_MISSING_BASE=false` selectively silences Steam and Epic missing-base-game alerts without hiding other claim failures.
+- `NOTIFY_ERRORS_ONLY=1` suppresses successful results while preserving enabled failure and manual-action alerts.
+- Regression tests for notification filtering, dispatch, and run aggregation.
+
+### Fixed
+- Failed claims no longer receive a success headline and remain visible when successful summaries are disabled.
+- Epic claim failures and GOG redemption results are no longer sent twice.
+- Steam Guard prompts respect `NOTIFY_LOGIN_REQUEST`.
+- Local virtual environments are excluded from Git and Docker build contexts.
+
 ## [1.2] - 2026-07-01
 
 ### Added

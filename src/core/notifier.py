@@ -107,15 +107,49 @@ async def notify(
         logger.exception("Failed to send notification")
 
 
-def format_game_list(games: list[dict]) -> str:
-    """Format a list of ``{title, url, status}`` dicts into a readable string."""
-    lines: list[str] = []
-    for g in games:
-        url = g.get("url", "")
-        title = g.get("title", "Unknown")
-        status = g.get("status", "?")
-        if url:
-            lines.append(f"- **[{title}]({url})** - {status}")
-        else:
-            lines.append(f"- **{title}** - {status}")
-    return "\n".join(lines)
+def format_result_lines(results: list[dict]) -> list[str]:
+    """Build compact push lines, honoring success and failure preferences."""
+    lines = []
+    for result in results:
+        for game in result.get("games", []):
+            status = str(game.get("status") or "").strip()
+            normalized = status.lower()
+            if not status or normalized.startswith(("exist", "already", "skip")):
+                continue
+            # Match explicit causes, never game titles or arbitrary error text.
+            if not cfg.notify_missing_base and normalized in {
+                "failed:missing_base", "failed:requires-base-game", "requires base game",
+            }:
+                continue
+            needs_action = any(word in normalized for word in (
+                "failed", "not redeemed", "check manually", "needs linking",
+                "requires base", "manual", "error",
+            ))
+            success = not needs_action and (
+                normalized.startswith("claimed") or normalized.startswith("code:")
+            )
+            if success:
+                if cfg.notify_errors_only or not cfg.notify_summary:
+                    continue
+                label = status[0].upper() + status[1:]
+            else:
+                if not cfg.notify_claim_fails:
+                    continue
+                if normalized.startswith("failed"):
+                    label = status[0].upper() + status[1:]
+                elif any(word in normalized for word in ("manual", "needs linking", "requires base")):
+                    label = f"Action required: {status}"
+                else:
+                    label = f"Failed: {status}"
+            title = " ".join(str(game.get("title") or "Unknown").split())
+            store = " ".join(str(result.get("store") or "Unknown").split())
+            label = " ".join(label.split())
+            lines.append(f"{title} - {label} - {store}")
+    return lines
+
+
+async def notify_results(results: list[dict]) -> None:
+    """Send successes and problems together without a redundant heading."""
+    lines = format_result_lines(results)
+    if lines:
+        await notify("\n".join(lines), title=lines[0])

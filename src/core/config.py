@@ -80,9 +80,11 @@ class Config:
     # --- Notifications ---
     discord_webhook: str | None = os.getenv("DISCORD_WEBHOOK")
     notify_url: str | None = os.getenv("NOTIFY")  # apprise URL fallback
+    notify_errors_only: bool = _bool("NOTIFY_ERRORS_ONLY", default=False)
     notify_summary: bool = _bool("NOTIFY_SUMMARY", default=True)
     notify_errors: bool = _bool("NOTIFY_ERRORS", default=True)
     notify_claim_fails: bool = _bool("NOTIFY_CLAIM_FAILS", default=True)
+    notify_missing_base: bool = _bool("NOTIFY_MISSING_BASE", default=True)
     notify_login_request: bool = _bool("NOTIFY_LOGIN_REQUEST", default=True)
 
     # --- Epic Games ---
@@ -97,7 +99,6 @@ class Config:
     pg_otpkey: str | None = os.getenv("PG_OTPKEY")
     pg_force_check_collected: bool = _bool("PG_FORCE_CHECK_COLLECTED")
     pg_redeem: bool = _bool("PG_REDEEM")
-    pg_claimdlc: bool = _bool("PG_CLAIMDLC")
 
     # --- GOG ---
     gog_email: str | None = os.getenv("GOG_EMAIL") or os.getenv("EMAIL")

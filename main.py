@@ -310,7 +310,8 @@ async def run_claimers(*, store_keys: list[str] | None = None) -> None:
                 aggregated_results.append(res)
         except Exception:
             logger.exception("✗ %s crashed", name)
-            await notify(f"ERROR: {name} claimer crashed with an unhandled exception. Check logs.")
+            if cfg.notify_errors:
+                await notify(f"ERROR: {name} claimer crashed with an unhandled exception. Check logs.")
 
     # After standard claimers finish, check for pending GOG codes from Prime Gaming.
     # Only run if there are actually codes with status="claimed" waiting,
@@ -350,42 +351,12 @@ async def run_claimers(*, store_keys: list[str] | None = None) -> None:
                 logger.debug("No pending GOG codes to redeem.")
         except Exception:
             logger.exception("Failed to run post-claim GOG code redemption")
+            if cfg.notify_errors:
+                await notify("ERROR: GOG code redemption failed. Check logs.")
 
-    # Final Summary Notification
-    if cfg.notify_summary and aggregated_results:
-        from src.core.notifier import format_game_list
-        msg_parts = []
-        relevant_headlines = []
-        for result in aggregated_results:
-            # Filter out games that were "existed" or "already redeemed"
-            relevant_games = [
-                g for g in result["games"]
-                if "status" in g 
-                and "exist" not in g["status"].lower() 
-                and "already" not in g["status"].lower()
-                and "skip" not in g["status"].lower()
-            ]
-            
-            if not relevant_games:
-                continue
-
-            for game in relevant_games:
-                relevant_headlines.append({
-                    "store": result["store"],
-                    "title": game.get("title", "Unknown"),
-                })
-                
-            header = f"**{result['store']}** ({result['user']}):" if result.get('user') else f"**{result['store']}**:"
-            msg_parts.append(f"{header}\n{format_game_list(relevant_games)}")
-            
-        if msg_parts:
-            first = relevant_headlines[0]
-            if len(relevant_headlines) == 1:
-                headline = f"SUCCESSFULLY CLAIMED: {first['title']} ({first['store']})"
-            else:
-                headline = f"SUCCESSFULLY CLAIMED: {first['title']} ({first['store']}) + {len(relevant_headlines) - 1} more"
-            final_msg = f"{headline}\n\n" + "\n\n".join(msg_parts)
-            await notify(final_msg)
+    # Report each game once, with its actual status first in the push body.
+    from src.core.notifier import notify_results
+    await notify_results(aggregated_results)
 
     logger.info("✔ Claiming run complete.")
 

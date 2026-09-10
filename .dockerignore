@@ -2,6 +2,6 @@ __pycache__/
 *.pyc
 data/
 .env
-.venv/
+.venv*/
 .git/
 *.md

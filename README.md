@@ -119,7 +119,6 @@ Options are set via environment variables in `.env`:
 | `PG_OTPKEY` | | Prime Gaming 2FA OTP key. |
 | `PG_FORCE_CHECK_COLLECTED` | `0` | Force re-check already marked 'claimed' games. |
 | `PG_REDEEM` | `0` | Try to redeem keys automatically on external stores. |
-| `PG_CLAIMDLC` | `0` | Try claiming DLCs as well (experimental). |
 | `GOG_EMAIL` | | GOG login email. |
 | `GOG_PASSWORD` | | GOG login password. |
 | `GOG_NEWSLETTER` | `0` | Keep newsletter sub after claiming (1 = keep). |
@@ -145,9 +144,11 @@ Options are set via environment variables in `.env`:
 | `DEBUG` | `0` | Shows verbose actions the bot takes. |
 | `DRYRUN`| `0` | Click "claim" buttons but do not submit / perform final purchase. |
 | `DISCORD_WEBHOOK` | | Discord webhook URL for notifications. |
-| `NOTIFY_SUMMARY` | `1` | Set to 0 to disable game claim summaries. |
+| `NOTIFY_ERRORS_ONLY` | `0` | Set to 1 to suppress successful claims; keep enabled error and action alerts. |
+| `NOTIFY_SUMMARY` | `1` | Set to 0 to disable successful claim summaries (failures remain independent). |
 | `NOTIFY_ERRORS` | `1` | Set to 0 to disable fatal error alerts. |
 | `NOTIFY_CLAIM_FAILS`| `1` | Set to 0 to disable alerts for unclaimable games. |
+| `NOTIFY_MISSING_BASE` | `1` | Set to 0 to hide missing-base-game failures only (Steam and Epic Games). |
 | `NOTIFY_LOGIN_REQUEST`| `1` | Set to 0 to disable VNC login request pings. |
 
 ### Scheduler
@@ -236,9 +237,29 @@ free-games-claimer-remaster/
 
 ## Notifications
 
-Set `DISCORD_WEBHOOK` in `.env` for Discord notifications about claimed games and errors. Messages start with clear `SUCCESSFULLY CLAIMED`, `ERROR`, or `ACTION REQUIRED` headlines so mobile push notifications are easier to read. Use the respective `NOTIFY_...=0` flags to silence notification subsets if they generate too much noise.
+Set `DISCORD_WEBHOOK` in `.env` for Discord notifications about claimed games and errors. Game results start directly with one plain-text line per game, for example:
+
+```text
+Luftrausers - Claimed - Epic Games
+Astral Ascent - Claimed - Epic Games
+```
+
+Failures show their actual status, such as `Game title - Failed - Epic Games`, and manual steps use `Action required`, without a success headline or duplicate store heading. Already owned and skipped games remain silent.
+
+Keep `NOTIFY_ERRORS_ONLY=0` (the default) while monitoring successful claims. Later, set `NOTIFY_ERRORS_ONLY=1` in `.env` and restart/recreate the service to receive only problems and required actions, including manual login requests. Leave `NOTIFY_ERRORS`, `NOTIFY_CLAIM_FAILS`, and `NOTIFY_LOGIN_REQUEST` enabled for these alerts. These individual flags still control their respective categories; `NOTIFY_SUMMARY=0` only suppresses successful results. Discord and Apprise use the same filtering.
 
 For other services, [apprise](https://github.com/caronc/apprise) natively supports sending to Telegram, Slack, Matrix and more – just set the `NOTIFY` variable!
+
+To silence repeated DLC failures caused by a missing base game, set `NOTIFY_MISSING_BASE=false` and keep `NOTIFY_CLAIM_FAILS=true`. This excludes Steam's `failed:missing_base` and Epic's equivalent missing-base statuses from notifications. Other failures and successful claims still follow their usual settings, including in errors-only mode. The default is `true`; this filter does not enable alerts disabled by other flags. It only affects notifications: DLC checks are still retried, so acquiring the base game can allow a later claim. Restart/recreate the service after changing the environment.
+
+Notification regression tests run without sending real messages or opening a browser:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Use Python 3.11, matching CI and the Docker base image. The current `nodriver 0.50.3` package fails to import under Python 3.14 because of an [upstream source-encoding issue](https://github.com/ultrafunkamsterdam/nodriver/issues/35). The notification test workflow runs on pushes and pull requests affecting the application or tests.
+
 
 ---
 

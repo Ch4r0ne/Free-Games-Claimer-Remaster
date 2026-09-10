@@ -12,7 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.notifier import notify
 from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.steam")
@@ -74,9 +74,6 @@ class SteamClaimer(BaseClaimer):
             if cfg.notify_errors:
                 await notify(f"ERROR: Steam claimer failed - {exc}")
         finally:
-            # Send notification with newly claimed games
-            has_new = [g for g in self.notify_games if g["status"] == "claimed"]
-            # We defer notification sending to main.py
             await self.close_browser()
 
     # ------------------------------------------------------------------
@@ -367,7 +364,7 @@ class SteamClaimer(BaseClaimer):
             
             if has_guard:
                 logger.warning("⚠ Steam Guard detected! Please enter the code via VNC or approve on your phone. (Waiting up to 2 min)")
-                if cfg.notify_errors:
+                if cfg.notify_login_request:
                     await notify("ACTION REQUIRED: Steam Guard code required. Open VNC and enter the code, or approve on your mobile app.")
                 
                 # Wait for user to complete Steam Guard

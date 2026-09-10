@@ -11,7 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.notifier import notify
 from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.gog")
@@ -528,19 +528,11 @@ class GOGClaimer(BaseClaimer):
             for g in gog_games:
                 await self._redeem_gog_code(g.code, g.title, g.url)
                 
-            # Send a notification summary of all redeemed codes
-            claimed = [g for g in self.notify_games if g["status"] != "existed"]
-            if claimed and cfg.notify_summary:
-                from src.core.notifier import format_game_list, notify
-                first_title = claimed[0].get("title", "Unknown")
-                if len(claimed) == 1:
-                    headline = f"SUCCESSFULLY CLAIMED: {first_title} (GOG Auto-Redeemer)"
-                else:
-                    headline = f"SUCCESSFULLY CLAIMED: {first_title} (GOG Auto-Redeemer) + {len(claimed) - 1} more"
-                msg = f"{headline}\n\n**GOG Auto-Redeemer**:\n{format_game_list(self.notify_games)}"
-                await notify(msg)
+            # Results are included once in the central run summary.
         except Exception:
             logger.exception("Fatal error during pending codes redemption")
+            if cfg.notify_errors:
+                await notify("ERROR: GOG pending code redemption failed. Check logs.")
         finally:
             await self.close_browser()
 
